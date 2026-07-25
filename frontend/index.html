@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Anki Tool v2 - Card Generator</title>
+<style>
+  :root {
+    --accent: #4a6fa5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, sans-serif;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 16px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: #666; margin-top: 0; margin-bottom: 24px; font-size: 0.9rem; }
+  .settings {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    color: #555;
+  }
+  .settings input[type="color"] { border: none; width: 32px; height: 28px; padding: 0; }
+  .row { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type="text"] {
+    flex: 1;
+    padding: 8px 10px;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+  button {
+    padding: 8px 16px;
+    font-size: 1rem;
+    border: none;
+    border-radius: 4px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  button.secondary { background: #888; }
+  .status {
+    padding: 10px 12px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .status.error { background: #fdecea; color: #b3261e; display: block; }
+  .status.info { background: #e8f0fe; color: #1a4f9c; display: block; }
+  .card {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 20px;
+    display: none;
+  }
+  .card.visible { display: block; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #555;
+    margin-bottom: 4px;
+  }
+  .field input, .field textarea {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 0.95rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  .field textarea { resize: vertical; min-height: 50px; }
+  .card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Anki Tool v2</h1>
+  <p class="subtitle">Japanese card generator (local Ollama + Anki)</p>
+
+  <div class="settings">
+    <label>Accent: <input type="color" id="accentPicker" value="#4a6fa5"></label>
+    <label>Font:
+      <select id="fontPicker">
+        <option value="system-ui, sans-serif">System UI</option>
+        <option value="'Meiryo', sans-serif">Meiryo</option>
+        <option value="'MS Gothic', monospace">MS Gothic</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <input type="text" id="wordInput" placeholder="Enter a Japanese word, e.g. 飛行機">
+    <button id="generateBtn">Generate</button>
+  </div>
+
+  <div id="statusBox" class="status"></div>
+
+  <div id="cardBox" class="card">
+    <div class="field">
+      <label for="f-expression">Expression</label>
+      <input type="text" id="f-expression">
+    </div>
+    <div class="field">
+      <label for="f-reading">Reading</label>
+      <input type="text" id="f-reading">
+    </div>
+    <div class="field">
+      <label for="f-definition">Monolingual Definition</label>
+      <textarea id="f-definition"></textarea>
+    </div>
+    <div class="field">
+      <label for="f-nuance">Nuance</label>
+      <textarea id="f-nuance"></textarea>
+    </div>
+    <div class="field">
+      <label for="f-example">Example Sentence</label>
+      <textarea id="f-example"></textarea>
+    </div>
+    <div class="field">
+      <label for="f-jlpt">JLPT Level</label>
+      <input type="text" id="f-jlpt">
+    </div>
+    <div class="card-actions">
+      <button class="secondary" id="rejectBtn">Discard</button>
+      <button id="exportBtn">Export to Anki</button>
+    </div>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>

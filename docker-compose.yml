@@ -1,0 +1,31 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_japanese_llm
+    ports:
+      - "11435:11434"
+    volumes:
+      # Persists downloaded models on host machine so they don't re-download on restart
+      - ollama_data:/root/.ollama
+    environment:
+      # Allows cross-origin requests if model is accessed from web browsers/extensions
+      - OLLAMA_ORIGINS=*
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: anki_tool_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      # Override via a local .env file (not committed) for anything beyond local dev use.
+      - POSTGRES_USER=${POSTGRES_USER:-anki_tool}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-devpassword}
+      - POSTGRES_DB=${POSTGRES_DB:-anki_tool}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  postgres_data:
