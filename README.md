@@ -34,7 +34,7 @@ Generate Japanese Anki flashcards using a local LLM (via Ollama).
 ## Running the Frontend (Prototype)
 
 A minimal HTML/JS frontend prototype lives in `frontend/` (`index.html` + `index.js`).
-It's a stand-in for the Electron UI described in ARCHITECTURE.md — useful for shaping
+It's a stand-in for the Electron UI described in ARCHITECTURE.md - useful for shaping
 the card review layout before the Electron shell exists.
 
 It expects a backend at `http://localhost:5000` exposing `/generate` and `/export`

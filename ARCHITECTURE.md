@@ -15,11 +15,11 @@
 [Ollama Container]
      │ (Structured JSON Response)
      ▼
-[Python Backend]
-     │ (Validation & Local SQLite Sync)
-     ▼
 [Electron UI Form]  <-- USER EDITS HERE
      │ (User submits final edited card)
+     ▼
+[Python Backend]
+     │ (Validation & Local SQLite Sync)
      ▼
 [Python Backend]
      │ (AnkiConnect REST API)
@@ -43,6 +43,6 @@
    - The user modifies any field manually.
 
 4. **Persistence & Export:**
-   - Drafts are recorded in local SQLite container database.
+   - Drafts are recorded in local SQLite container database AFTER user edits have been made.
    - Upon clicking "Export to Anki", Python posts the finalized payload to AnkiConnect (`http://localhost:8765`).
    - If Anki is unreachable, UI displays connection error without discarding user edits.
