@@ -1,36 +1,35 @@
-import os
-from ollama import Client
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-client = Client(
-    host=os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    # If the value does not exist, it will default to port 11434
+from backend.anki import AnkiConnectError, export_card
+from backend.llm import LLMError, generate_card
+from backend.models import ExportRequest, GenerateRequest
+
+app = FastAPI(title="Anki Tool v2 Backend")
+
+# Local-only, single-user tool with no auth (see PROJECT.md non-goals) -
+# permissive CORS is fine here since the frontend is served from a different
+# origin (e.g. http://localhost:8080 or file://) than this API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-# Define your desired schema
-class JapaneseDefinition(BaseModel):
-    kanji: str = Field(description="The word in Kanji/Kana")
-    reading: str = Field(description="Reading in Hiragana")
-    part_of_speech: str = Field(
-        description="Part of speech in Japanese (e.g., 名詞, 動詞)"
-    )
-    definition_ja: str = Field(description="Monolingual Japanese definition")
-    example_sentence: str = Field(description="Example sentence in Japanese")
+@app.post("/generate")
+def generate(request: GenerateRequest):
+    try:
+        return generate_card(request.word)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-# Pass the schema directly into the `format` parameter
-response = client.chat(
-    model="yuma/DeepSeek-R1-Distill-Qwen-Japanese:14b",
-    messages=[
-        {
-            "role": "user",
-            "content": "「猫」という言葉の日本語の定義を生成してください。",  # Test data for proof of concept
-        }
-    ],
-    format=JapaneseDefinition.model_json_schema(),  # Native schema enforcement
-)
-
-# Parsed directly into a structured Python object
-entry = JapaneseDefinition.model_validate_json(response.message.content)
-print(entry.definition_ja)
+@app.post("/export")
+def export(request: ExportRequest):
+    try:
+        export_card(request)
+    except AnkiConnectError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "exported"}

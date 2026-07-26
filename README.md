@@ -11,16 +11,24 @@ Generate Japanese Anki flashcards using a local LLM (via Ollama).
 ## Setup
 
 1. `docker compose up -d`
-2. Pull the model: `docker exec -it ollama_japanese_llm ollama pull <model>`
+2. Pull the model: `docker exec -it ollama_japanese_llm ollama pull yuma/DeepSeek-R1-Distill-Qwen-Japanese:14b`
 3. Install Python deps: `pip install -r requirements.txt`
 
 ## Usage
 
-<!-- how to run the import -> generate -> export pipeline once it exists -->
+1. Start the LLM and database containers: `docker compose up -d`
+2. Start the backend: `uvicorn backend.main:app --reload --port 5000` (from the project root)
+3. Serve the frontend (see "Running the Frontend" below) and open it in a browser
+4. Enter a word, click Generate, review/edit the fields, then click Export to Anki (requires Anki running locally with the AnkiConnect add-on)
+
+Batch `.txt` upload isn't implemented yet - see ROADMAP.md.
 
 ## Configuration
 
-<!-- env vars, model name, Ollama host/port -->
+- `OLLAMA_HOST` - full URL to the Ollama instance (default: `http://localhost:11435`, matching the host port `docker-compose.yml` maps to the container's `11434`).
+- `ANKICONNECT_URL` - AnkiConnect endpoint (default: `http://localhost:8765`).
+- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE` - target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields - set up a custom note type matching the six card fields and point these vars at it for a better fit.
+- Model: `yuma/DeepSeek-R1-Distill-Qwen-Japanese:14b` (see PROMPTS.md for the prompt and a manual test command).
 
 ## Project docs
 
