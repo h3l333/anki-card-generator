@@ -33,7 +33,6 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 ## Non-goals
 
 - No Yomitan export parsing or browser extension hooks.
-- No cloud-hosted LLMs (strict local-only requirement).
 - No automatic vocabulary mining from anime, manga, or websites.
 - No mobile applications.
 - No collaborative or multi-user features.

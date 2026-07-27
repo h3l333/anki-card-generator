@@ -13,7 +13,7 @@ class CardDraft(BaseModel):
         description="Usage notes, formality, and nuance versus similar words"
     )
     example_sentence: str = Field(
-        description="Natural example sentence with furigana"
+        description="Natural example sentence, plain kanji/kana text (no furigana)"
     )
     jlpt_level: str = Field(description="Estimated JLPT level, N5 to N1")
 
