@@ -25,3 +25,17 @@ class ExportRequest(BaseModel):
     nuance: str
     example: str
     jlpt: str
+
+
+class BatchGenerateRequest(BaseModel):
+    file_content: str
+
+
+class BatchCardResult(BaseModel):
+    word: str
+    card: CardDraft | None = None
+    error: str | None = None
+
+
+class BatchGenerateResponse(BaseModel):
+    results: list[BatchCardResult]

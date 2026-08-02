@@ -2,11 +2,11 @@
 
 ## Goal
 
-Generate high-quality Japanese Anki flashcards using local LLMs (via Ollama in Docker) with a desktop review interface, exporting directly to Anki.
+Generate high-quality Japanese Anki flashcards using the OpenRouter API (free-tier LLM access) with a browser-based review interface, exporting directly to Anki.
 
 ## Target Users
 
-Intermediate and advanced Japanese learners who want fast, nuanced monolingual cards without relying on cloud APIs.
+Intermediate and advanced Japanese learners who want fast, nuanced monolingual cards without paying for LLM access or running local model infrastructure.
 
 ## Core Features
 
@@ -27,7 +27,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 - **AnkiConnect Export:** Push approved cards directly to Anki via the AnkiConnect add-on.
 - **Card Customization:** Allow users to set basic CSS preferences in the UI:
-  - Theme Color (e.g., card background / accent colors)
+  - Theme Color (e.g., card background/accent colors)
   - Font Family
 
 ## Non-goals
@@ -45,34 +45,34 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 ## Technical Stack & Architecture
 
-### Desktop Frontend
+### Frontend
 
-- **Framework:** Electron (Node.js / Web Technologies).
-- **Role:** Handles desktop UI, file uploads (`.txt`), single-word input, interactive card editor/preview, CSS theme/font configuration, and error state alerts.
+- **Framework:** Static HTML/CSS/JS, run in a standard web browser.
+- **Role:** Handles UI, file uploads (`.txt`), single-word input, interactive card editor/preview, CSS theme/font configuration, and error state alerts.
 
 ### Backend & AI Pipeline
 
 - **Language:** Python 3.11+.
 - **Role:** Main application logic, prompt engineering, JSON response parsing, AnkiConnect HTTP requests, and database persistence.
-- **Local AI Setup:** Ollama running in a Docker container.
-  - **Default Port:** `11434` (must be configurable via environment variable, e.g., `OLLAMA_PORT`).
-  - **Requirement:** Python backend communicates with Ollama using structured JSON output enforcement.
+- **AI Setup:** OpenRouter (cloud LLM routing API, free-tier models), called directly over HTTPS- no local model, GPU, or Ollama container required.
+  - **Provider:** OpenRouter is the fixed provider- the underlying model is configurable via `OPENROUTER_MODEL` so different free-tier models can be swapped in.
+  - **Requirement:** Python backend requests structured JSON output from the configured provider's API and validates it against the card schema.
 
 ### Data Persistence
 
-- **Database:** SQLite running inside its own isolated container or persistent storage location to save history, card drafts, and app configurations.
+- **Database:** Postgres running in its own Docker container (see `DATABASE.md`) to save history, card drafts, and app configurations.
 
 ### App Deployment (Current Phase)
 
-- Launched via a simple local Python execution script bridging the Electron shell and backend service.
+- Backend and frontend run as independent processes (see README "Running the Frontend")- no desktop shell or bridging script needed.
 
 ---
 
 ## Integrations & External Systems
 
-1. **Ollama Docker Container**
-   - Address: `http://localhost:${OLLAMA_PORT:-11434}`
-   - Role: Local LLM engine serving card content.
+1. **OpenRouter (Cloud LLM API)**
+   - Address: `https://openrouter.ai/api/v1` (no local port).
+   - Role: Generates card content (definition, nuance, example, JLPT estimate) from a free-tier API key.
 
 2. **Anki Desktop & AnkiConnect Add-on**
    - Address: `http://localhost:8765`
@@ -85,4 +85,4 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 The UI must present explicit, user-friendly error dialogs/notifications for key failure points:
 
 - **Anki Connection Failure:** If Anki is closed or AnkiConnect is unreachable, prompt the user: _"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled."_
-- **LLM Parsing Error:** If Ollama returns invalid or malformed JSON, inform the user: _"Failed to parse LLM response due to formatting errors. Please retry generation."_
+- **LLM Parsing Error:** If the LLM API returns invalid or malformed JSON, inform the user: _"Failed to parse LLM response due to formatting errors. Please retry generation."_

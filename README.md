@@ -1,34 +1,44 @@
 # Anki Tool v2
 
-Generate Japanese Anki flashcards using a local LLM (via Ollama).
+Generate Japanese Anki flashcards using the OpenRouter API (free-tier LLM access).
 
 ## Prerequisites
 
-- Docker / Docker Compose
+- Docker/Docker Compose (for the Postgres container)
 - Python 3.x
+- An OpenRouter API key (free tier available)
 - Anki (with AnkiConnect, if using that export path)
 
 ## Setup
 
-1. `docker compose up -d`
-2. Pull the model: `docker exec -it ollama_japanese_llm ollama pull yuma/DeepSeek-R1-Distill-Qwen-Japanese:14b`
+1. `docker compose up -d` (starts the Postgres container)
+2. Set `OPENROUTER_API_KEY` as an environment variable (or in `.env`)- see Configuration
 3. Install Python deps: `pip install -r requirements.txt`
 
 ## Usage
 
-1. Start the LLM and database containers: `docker compose up -d`
+1. Start the database container: `docker compose up -d`
 2. Start the backend: `uvicorn backend.main:app --reload --port 5000` (from the project root)
 3. Serve the frontend (see "Running the Frontend" below) and open it in a browser
 4. Enter a word, click Generate, review/edit the fields, then click Export to Anki (requires Anki running locally with the AnkiConnect add-on)
 
-Batch `.txt` upload isn't implemented yet - see ROADMAP.md.
+For multiple words at once, use the Batch Upload section: a `.txt` file with one word per line (kanji/kana only, max 12 words), e.g.:
+
+```
+猫
+犬
+大人
+大前提
+```
+
+Click "Generate from File" to get a horizontally-scrollable carousel of cards, one per word- each is independently editable, discardable, and exportable, same as the single-word flow. If a word fails to generate, its card shows the error and the rest of the batch still completes; a malformed file (wrong characters, too many words) is rejected with an error before anything is generated.
 
 ## Configuration
 
-- `OLLAMA_HOST` - full URL to the Ollama instance (default: `http://localhost:11435`, matching the host port `docker-compose.yml` maps to the container's `11434`).
-- `ANKICONNECT_URL` - AnkiConnect endpoint (default: `http://localhost:8765`).
-- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE` - target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields- set up a custom note type matching the six card fields and point these vars at it for a better fit.
-- Model: `yuma/DeepSeek-R1-Distill-Qwen-Japanese:14b` (see PROMPTS.md for the prompt and a manual test command).
+- `OPENROUTER_API_KEY`- authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
+- `OPENROUTER_MODEL`- selects which model OpenRouter routes the request to (default: a free-tier model- see PROMPTS.md).
+- `ANKICONNECT_URL`- AnkiConnect endpoint (default: `http://localhost:8765`).
+- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`- target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields- set up a custom note type matching the six card fields and point these vars at it for a better fit.
 
 ## Project docs
 
@@ -39,16 +49,15 @@ Batch `.txt` upload isn't implemented yet - see ROADMAP.md.
 - [API.md](API.md) - internal module interfaces
 - [ROADMAP.md](ROADMAP.md) - planned work
 
-## Running the Frontend (Prototype)
+## Running the Frontend
 
-A minimal HTML/JS frontend prototype lives in `frontend/` (`index.html` + `index.js`).
-It's a stand-in for the Electron UI described in ARCHITECTURE.md - useful for shaping
-the card review layout before the Electron shell exists.
+The frontend is a static HTML/JS app in `frontend/` (`index.html` + `index.js`), run
+directly in a regular browser- this is the actual UI, not a placeholder for a desktop
+shell.
 
-It expects a backend at `http://localhost:5000` exposing `/generate` and `/export`
-endpoints (not implemented yet). Until the backend exists, clicking Generate or Export
-will surface the same connection-error messaging described in PROJECT.md's error
-handling section.
+It expects a backend at `http://localhost:5000` exposing `/generate`, `/generate/batch`,
+and `/export`. If the backend is unreachable, clicking Generate or Export will surface
+the connection-error messaging described in PROJECT.md's error handling section.
 
 1. From the project root: `cd frontend`
 2. Serve it locally: `python -m http.server 8080`

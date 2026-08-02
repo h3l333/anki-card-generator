@@ -1,17 +1,4 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama_japanese_llm
-    ports:
-      - "11435:11434"
-    volumes:
-      # Persists downloaded models on host machine so they don't re-download on restart
-      - ollama_data:/root/.ollama
-    environment:
-      # Allows cross-origin requests if model is accessed from web browsers/extensions
-      - OLLAMA_ORIGINS=*
-    restart: unless-stopped
-
   postgres:
     image: postgres:16
     container_name: anki_tool_postgres
@@ -27,5 +14,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  ollama_data:
   postgres_data:

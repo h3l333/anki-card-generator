@@ -82,11 +82,30 @@
   }
   .field textarea { resize: vertical; min-height: 50px; }
   .card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 28px 0 16px; }
+  .carousel {
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    padding-bottom: 12px;
+    scroll-snap-type: x mandatory;
+  }
+  .carousel-card {
+    flex: 0 0 auto;
+    width: 300px;
+    scroll-snap-align: start;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 16px;
+  }
+  .carousel-card.error { border-color: #b3261e; background: #fdecea; color: #b3261e; }
+  .carousel-card .word-label { font-weight: 600; margin-bottom: 8px; }
 </style>
 </head>
 <body>
   <h1>Anki Tool v2</h1>
-  <p class="subtitle">Japanese card generator (local Ollama + Anki)</p>
+  <p class="subtitle">Japanese card generator (OpenRouter + Anki)</p>
 
   <div class="settings">
     <label>Accent: <input type="color" id="accentPicker" value="#4a6fa5"></label>
@@ -136,6 +155,19 @@
       <button id="exportBtn">Export to Anki</button>
     </div>
   </div>
+
+  <hr>
+  <h2>Batch Upload (.txt)</h2>
+  <p class="subtitle">One word per line, kanji/kana only, max 12 words.</p>
+
+  <div class="row">
+    <input type="file" id="fileInput" accept=".txt">
+    <button id="batchGenerateBtn">Generate from File</button>
+  </div>
+
+  <div id="batchStatusBox" class="status"></div>
+
+  <div id="carousel" class="carousel"></div>
 
   <script src="index.js"></script>
 </body>

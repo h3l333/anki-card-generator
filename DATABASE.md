@@ -9,11 +9,11 @@ What gets persisted between pipeline runs and why (e.g. caching LLM output after
 Postgres, running in its own Docker container (see `docker-compose.yml`, service
 `postgres`), accessed over TCP on port `5432`. Chosen over SQLite specifically to
 avoid the file/volume-sharing problem of a file-based DB living in a separate
-container from the Python backend - Postgres exposes a normal network port instead,
+container from the Python backend- Postgres exposes a normal network port instead,
 so the backend just needs a connection string, not a shared bind mount.
 
 Credentials are supplied via `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
-env vars (defaults in `docker-compose.yml` are for local dev only - override via a
+env vars (defaults in `docker-compose.yml` are for local dev only- override via a
 local, uncommitted `.env` file if that matters to you).
 
 ## Schema

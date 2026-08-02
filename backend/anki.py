@@ -14,8 +14,9 @@ class AnkiConnectError(Exception):
 
 
 def _build_fields(card: ExportRequest) -> dict:
-    # "Basic" only has Front/Back - fold the six card fields into those two
+    # "Basic" only has Front/Back- fold the six card fields into those two
     # until a custom Japanese note type exists in Anki (see README Configuration).
+    # "Folding" in this context means to combine, flatten or merge multiple pieces of data into fewer containers.
     front = f"{card.expression}<br>{card.reading}"
     back = (
         f"<b>Definition:</b> {card.definition}<br>"
