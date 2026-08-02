@@ -55,7 +55,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 - **Language:** Python 3.11+.
 - **Role:** Main application logic, prompt engineering, JSON response parsing, AnkiConnect HTTP requests, and database persistence.
 - **AI Setup:** OpenRouter (cloud LLM routing API, free-tier models), called directly over HTTPS- no local model, GPU, or Ollama container required.
-  - **Provider:** OpenRouter is the fixed provider- the underlying model is configurable via `OPENROUTER_MODEL` so different free-tier models can be swapped in.
+  - **Provider:** OpenRouter is the fixed provider- a list of candidate models is configurable via `OPENROUTER_MODELS`, with OpenRouter itself falling back through the list if one is unavailable.
   - **Requirement:** Python backend requests structured JSON output from the configured provider's API and validates it against the card schema.
 
 ### Data Persistence

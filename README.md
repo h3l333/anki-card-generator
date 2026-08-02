@@ -18,7 +18,7 @@ Generate Japanese Anki flashcards using the OpenRouter API (free-tier LLM access
 ## Usage
 
 1. Start the database container: `docker compose up -d`
-2. Start the backend: `uvicorn backend.main:app --reload --port 5000` (from the project root)
+2. Start the backend: `uvicorn backend.main:app --reload --port 5000 --env-file .env` (from the project root)- `--env-file` is required for uvicorn to actually pick up keys from `.env`; without it, `.env` values are never loaded and `/generate` will fail with "OPENROUTER_API_KEY is not set"
 3. Serve the frontend (see "Running the Frontend" below) and open it in a browser
 4. Enter a word, click Generate, review/edit the fields, then click Export to Anki (requires Anki running locally with the AnkiConnect add-on)
 
@@ -36,7 +36,7 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 ## Configuration
 
 - `OPENROUTER_API_KEY`- authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
-- `OPENROUTER_MODEL`- selects which model OpenRouter routes the request to (default: a free-tier model- see PROMPTS.md).
+- `OPENROUTER_MODELS`- comma-separated list of candidate models, tried in order via OpenRouter's built-in model fallback (default: a few free-tier models- see PROMPTS.md).
 - `ANKICONNECT_URL`- AnkiConnect endpoint (default: `http://localhost:8765`).
 - `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`- target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields- set up a custom note type matching the six card fields and point these vars at it for a better fit.
 

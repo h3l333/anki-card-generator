@@ -5,7 +5,10 @@ import requests
 from backend.models import BatchCardResult, CardDraft
 
 API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+DEFAULT_MODELS = "google/gemma-4-26b-a4b-it:free,openai/gpt-oss-20b:free,nvidia/nemotron-3-super-120b-a12b:free"
+MODEL_NAMES = [
+    m.strip() for m in os.getenv("OPENROUTER_MODELS", DEFAULT_MODELS).split(",") if m.strip()
+]
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 _PROMPT_TEMPLATE = """\
@@ -44,7 +47,7 @@ def generate_card(word: str) -> CardDraft:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": MODEL_NAME,
+                    "models": MODEL_NAMES,
                     "messages": [
                         {"role": "user", "content": _PROMPT_TEMPLATE.format(word=word)}
                     ],

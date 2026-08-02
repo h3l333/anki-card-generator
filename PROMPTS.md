@@ -16,10 +16,13 @@ model occasionally ignoring the target word mid-generation. Moving to a
 cloud API sidesteps the hardware constraint; whether it also resolves the
 topic-drift problem still needs to be verified against the new provider.
 
-The underlying model and its API key are configurable via environment
-variables (`OPENROUTER_MODEL`, `OPENROUTER_API_KEY`) rather than hardcoded,
+The API key and a list of candidate models are configurable via environment
+variables (`OPENROUTER_API_KEY`, `OPENROUTER_MODELS`) rather than hardcoded,
 so different free-tier models available through OpenRouter can be swapped
-in- see README.md Configuration.
+in- see README.md Configuration. `OPENROUTER_MODELS` is sent as OpenRouter's
+native `models` array (see "Model Fallbacks" in OpenRouter's docs), so
+OpenRouter itself retries the next candidate server-side if one is
+rate-limited or pulled from the free tier- no client-side retry loop needed.
 
 ## Card generation prompt
 
@@ -82,8 +85,17 @@ distinct from Ollama's `format` parameter used previously.
   notice). Verified against OpenRouter's live `/models` list and switched the
   default to `google/gemma-4-26b-a4b-it:free`, which supports
   `response_format`/`structured_outputs` and was confirmed working
-  end-to-end (correct word, valid JSON, all six fields). Since OpenRouter's
-  free-model lineup changes over time, if `/generate` starts 502ing with a
-  "model unavailable" error, check `https://openrouter.ai/api/v1/models`
-  for a current `:free` model with `response_format` support and set
-  `OPENROUTER_MODEL` to override.
+  end-to-end (correct word, valid JSON, all six fields).
+- 2026-08-02: switched from a single `OPENROUTER_MODEL` to a
+  `OPENROUTER_MODELS` list, sent as OpenRouter's native `models` array
+  (their built-in "Model Fallbacks" feature) instead of a custom retry loop-
+  if the first candidate is rate-limited or pulled from the free tier,
+  OpenRouter itself falls through to the next one server-side. Default list
+  (`backend/llm.py::DEFAULT_MODELS`): `google/gemma-4-26b-a4b-it:free`
+  (verified working end-to-end), `openai/gpt-oss-20b:free`,
+  `nvidia/nemotron-3-super-120b-a12b:free` (both confirmed to support
+  `response_format`/`structured_outputs` via the live `/models` list, not
+  yet live-tested end-to-end). If `/generate` ever 502s with all candidates
+  exhausted, check `https://openrouter.ai/api/v1/models` for current
+  `:free` models with `response_format` support and update
+  `OPENROUTER_MODELS`.
