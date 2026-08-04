@@ -27,8 +27,8 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 - **AnkiConnect Export:** Push approved cards directly to Anki via the AnkiConnect add-on.
 - **Card Customization:** Allow users to set basic CSS preferences in the UI:
-  - Theme Color (e.g., card background/accent colors)
-  - Font Family
+  - Theme Color (e.g., card background/accent colors).
+  - Font Family.
 
 ## Non-goals
 
@@ -41,8 +41,6 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 - No support for non-Japanese target languages.
 - No AI image generation for cards.
 
----
-
 ## Technical Stack & Architecture
 
 ### Frontend
@@ -54,8 +52,8 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 - **Language:** Python 3.11+.
 - **Role:** Main application logic, prompt engineering, JSON response parsing, AnkiConnect HTTP requests, and database persistence.
-- **AI Setup:** OpenRouter (cloud LLM routing API, free-tier models), called directly over HTTPS- no local model, GPU, or Ollama container required.
-  - **Provider:** OpenRouter is the fixed provider- a list of candidate models is configurable via `OPENROUTER_MODELS`, with OpenRouter itself falling back through the list if one is unavailable.
+- **AI Setup:** OpenRouter (cloud LLM routing API, free-tier models), called directly over HTTPS. No local model, GPU, or Ollama container is required.
+  - **Provider:** OpenRouter is the fixed provider. A list of candidate models is configurable via `OPENROUTER_MODELS`, with OpenRouter itself falling back through the list if one is unavailable.
   - **Requirement:** Python backend requests structured JSON output from the configured provider's API and validates it against the card schema.
 
 ### Data Persistence
@@ -64,21 +62,17 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 ### App Deployment (Current Phase)
 
-- Backend and frontend run as independent processes (see README "Running the Frontend")- no desktop shell or bridging script needed.
-
----
+- Backend and frontend run as independent processes (see README "Running the Frontend"). No desktop shell or bridging script is needed.
 
 ## Integrations & External Systems
 
-1. **OpenRouter (Cloud LLM API)**
-   - Address: `https://openrouter.ai/api/v1` (no local port).
-   - Role: Generates card content (definition, nuance, example, JLPT estimate) from a free-tier API key.
+1. **OpenRouter (Cloud LLM API):**
+   - **Address:** `https://openrouter.ai/api/v1` (no local port).
+   - **Role:** Generates card content (definition, nuance, example, JLPT estimate) from a free-tier API key.
 
-2. **Anki Desktop & AnkiConnect Add-on**
-   - Address: `http://localhost:8765`
-   - Role: Card ingestion target via HTTP API.
-
----
+2. **Anki Desktop & AnkiConnect Add-on:**
+   - **Address:** `http://localhost:8765`.
+   - **Role:** Card ingestion target via HTTP API.
 
 ## Error Handling & Resiliency Expectations
 
