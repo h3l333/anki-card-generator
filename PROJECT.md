@@ -14,6 +14,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 - **Monolingual Definition:** Generate Japanese-to-Japanese definitions appropriate for intermediate/advanced learners.
 - **Nuance Explanation:** Detail usage notes, formality, and subtle differences between similar words.
+- **Synonyms & Antonyms:** Surface similar- and opposite-meaning words alongside the target word, for ease of understanding.
 - **Context Sentences:** Generate natural example sentences with furigana/readings.
 - **JLPT Estimation:** Estimate the JLPT level (N5 to N1) for the target word.
 
@@ -68,7 +69,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 1. **OpenRouter (Cloud LLM API):**
    - **Address:** `https://openrouter.ai/api/v1` (no local port).
-   - **Role:** Generates card content (definition, nuance, example, JLPT estimate) from a free-tier API key.
+   - **Role:** Generates card content (definition, nuance, synonyms, antonyms, example, JLPT estimate) from a free-tier API key.
 
 2. **Anki Desktop & AnkiConnect Add-on:**
    - **Address:** `http://localhost:8765`.

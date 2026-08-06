@@ -26,15 +26,43 @@ solely on the LLM.
 
 ## Engineering tasks
 
-- **Test suite:** No automated tests exist yet. Planned approach: `pytest` +
-  FastAPI's `TestClient` (via `httpx`), with `tests/` mirroring `backend/`,
-  mocking `requests.post` in `llm.py` and `anki.py` (via `unittest.mock.patch`
-  or `requests-mock`) so tests don't hit OpenRouter or AnkiConnect for real.
-- **Postgres persistence:** `docker-compose.yml` already runs the `postgres`
-  service and `DATABASE.md` documents an intended `words`/`cards` schema, but
-  `backend/db.py` is currently empty and nothing in `backend/` connects to it
-  yet.
-- **Code documentation:** Add more in-repo comments/notes for personal
-  understanding of the codebase, beyond what's in the project docs.
+- **Batch Postgres persistence & export parity (next up):** the single-word
+  flow is fully wired to Postgres end to end- `/generate` does the duplicate
+  check before spending an LLM call and persists the raw card before any
+  edit; `/export` checks `get_latest_export()`, calls AnkiConnect's
+  `addNote` or `updateNoteFields` accordingly, and records the result via
+  `record_export()` (see `ARCHITECTURE.md`, `frontend/index.js`'s
+  `currentWordId`). Batch isn't- `generate_cards_batch()` (`backend/llm.py`)
+  and `BatchCardResult` (`backend/models.py`) never touch Postgres at all,
+  so batch-generated cards have no `word_id`, and a batch `/export` call
+  always falls back to a plain `addNote` with nothing recorded (see
+  `ExportRequest`'s optional `word_id` in `backend/models.py`- that's the
+  field that's currently always absent for a batch card). To close the gap:
+  - Add `word_id: int | None` to `BatchCardResult`.
+  - Persist each successfully-generated batch word to Postgres
+    (`insert_word`/`insert_card`, mirroring `/generate`'s route) and set
+    that result's `word_id`. **Open design question to resolve when picking
+    this up:** should that persistence live inside `generate_cards_batch()`
+    itself (`backend/llm.py`), or move up into `/generate/batch`'s route
+    (`backend/main.py`), matching where `/generate`'s own duplicate-check +
+    persistence currently lives? The latter keeps `llm.py` free of any
+    `db.py` dependency (today's layering), at the cost of restructuring how
+    `generate_cards_batch()` hands results back to the route.
+  - Thread `result.word_id` through `frontend/index.js`'s
+    `buildCarouselCard()`- each carousel card needs its own captured
+    word_id (mirroring `currentWordId` in the single-word flow), included
+    in that card's own Export button payload.
+  - Update `tests/test_llm.py`/`tests/test_main.py` for whichever module
+    ends up owning the new DB calls.
+  - Separate, larger decision, don't conflate with the above: whether batch
+    should also get the *pre-generation* duplicate check (skip the LLM call
+    per already-seen word, notify, sequential cancel/fetch-and-edit prompts-
+    the original fuller design discussed earlier in the project) is bigger
+    UX scope than just giving batch cards a `word_id`, and worth deciding
+    explicitly rather than assuming it's included.
+  - Still also missing regardless of the above: a `tests/test_db.py` suite
+    exercising `backend/db.py` directly against a real database.
 - **UML diagrams:** Diagram the repo's structure and data flow to make the
-  architecture easier to reason about at a glance.
+  architecture easier to reason about at a glance. `diagrams/` (PlantUML
+  `.puml` source, see `diagrams/README.md`) exists for this; no diagrams
+  have been written yet.

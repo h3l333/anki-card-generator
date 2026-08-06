@@ -38,7 +38,7 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 - `OPENROUTER_API_KEY`: authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
 - `OPENROUTER_MODELS`: comma-separated list of candidate models, tried in order via OpenRouter's built-in model fallback (default: a few free-tier models; see PROMPTS.md).
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
-- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields. Set up a custom note type matching the six card fields and point these vars at it for a better fit.
+- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields. Set up a custom note type matching the eight card fields and point these vars at it for a better fit.
 
 ## Project docs
 
@@ -47,6 +47,7 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 - [PROMPTS.md](PROMPTS.md): LLM prompt templates.
 - [DATABASE.md](DATABASE.md): storage schema.
 - [ROADMAP.md](ROADMAP.md): planned work.
+- [diagrams/](diagrams/README.md): PlantUML source diagramming architecture and workflows.
 
 ## Running the Frontend
 

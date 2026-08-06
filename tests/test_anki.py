@@ -18,13 +18,15 @@ from backend.anki import AnkiConnectError, _build_fields, export_card
 
 # backend/anki.py has two functions under test in this file:
 #   - _build_fields(card: ExportRequest) -> dict: pure- no network calls, no side effects. It
-#     just formats an ExportRequest's six fields into the {"Front": ..., "Back": ...} shape
+#     just formats an ExportRequest's eight fields into the {"Front": ..., "Back": ...} shape
 #     that Anki's "Basic" note type expects, since "Basic" only has those two fields.
-#   - export_card(card: ExportRequest) -> None: builds the AnkiConnect "addNote" payload,
-#     POSTs it to ANKICONNECT_URL (backend.anki.requests.post), and raises AnkiConnectError
-#     either if the POST itself fails outright (a network/connection problem) or if
-#     AnkiConnect responds normally but with its own "error" field set in the JSON body (e.g.
-#     a duplicate note).
+#   - export_card(card: ExportRequest, anki_note_id: int | None = None) -> int: builds an
+#     AnkiConnect payload- "addNote" when anki_note_id is None (the default), "updateNoteFields"
+#     targeting that note ID otherwise- POSTs it to ANKICONNECT_URL (backend.anki.requests.post),
+#     and raises AnkiConnectError either if the POST itself fails outright (a network/connection
+#     problem) or if AnkiConnect responds normally but with its own "error" field set in the
+#     JSON body (e.g. a duplicate note). Returns the Anki note ID either way- addNote's own
+#     assigned ID, or the same anki_note_id that was passed in for an update.
 # Every test below that calls export_card patches "backend.anki.requests.post" so that no real
 # network request is ever made- Anki desktop and AnkiConnect don't need to be running for
 # these tests to pass, only the fake response object each test constructs matters.
@@ -39,6 +41,8 @@ def test_build_fields_folds_card_into_front_and_back(sample_export_request):
         "<b>Reading:</b> おとな<br>"
         "<b>Definition:</b> 成長した人。成人であること。<br>"
         "<b>Nuance:</b> 日常会話・フォーマルな場面どちらでも使える語。<br>"
+        "<b>Synonyms:</b> 成人、大人物<br>"
+        "<b>Antonyms:</b> 子供、未成年<br>"
         "<b>Example:</b> 彼はもう大人だ。<br>"
         "<b>JLPT:</b> N5"
     )
@@ -52,12 +56,38 @@ def test_export_card_succeeds(sample_export_request):
     mock_response = MagicMock()
     mock_response.json.return_value = {"result": 12345, "error": None}
     with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
-        export_card(sample_export_request)
+        note_id = export_card(sample_export_request)
+    assert note_id == 12345
     mock_post.assert_called_once()
     mock_response.raise_for_status.assert_called_once()
     # Patching "backend.anki.requests.post" (not just "requests.post") matters- it replaces
     # the `requests` reference as seen from inside backend/anki.py specifically, which is
-    # where export_card's call actually happens.
+    # where export_card's call actually happens. No anki_note_id passed in here, so this
+    # exercises the addNote branch- the returned note_id should be AnkiConnect's own
+    # "result" value, not the (absent) input.
+
+
+def test_export_card_updates_existing_note_when_note_id_given(sample_export_request):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": None, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        note_id = export_card(sample_export_request, anki_note_id=999)
+
+    assert note_id == 999
+    _, kwargs = mock_post.call_args
+    payload = kwargs["json"]
+    note = payload["params"]["note"]
+    assert payload["action"] == "updateNoteFields"
+    assert note["id"] == 999
+    assert note["fields"]["Front"] == "大人"
+    assert set(note.keys()) == {"id", "fields"}
+    # Passing anki_note_id switches export_card to AnkiConnect's updateNoteFields action
+    # instead of addNote- targeting the note by ID rather than creating a new one.
+    # updateNoteFields' own "result" is null on success (see backend/anki.py)- it doesn't
+    # hand back an ID, which is why export_card returns the *input* anki_note_id (999)
+    # here rather than reading it from the response. The payload shape is also narrower
+    # than addNote's- no deckName/modelName/options/tags, since those describe how to
+    # create a note and don't apply to rewriting an existing one's fields.
 
 # Checks *what* export_card actually sends to AnkiConnect, not just that it succeeds-
 # inspecting mock_post.call_args lets this test look inside the JSON payload backend/anki.py

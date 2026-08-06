@@ -44,6 +44,8 @@ _PROMPT_TEMPLATE = """\
 - reading: 「{word}」のひらがなでの読み方
 - definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)
 - nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明
+- synonyms: 「{word}」の類義語(似た意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
+- antonyms: 「{word}」の対義語(反対の意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
 - example_sentence: 「{word}」を使った自然な例文。ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
 - jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)
 
@@ -64,7 +66,7 @@ class LLMError(Exception):
 
 def generate_card(word: str) -> CardDraft:
     if not API_KEY:
-        raise LLMError("OPENROUTER_API_KEY is not set - see README.md Configuration.")
+        raise LLMError("OPENROUTER_API_KEY is not set- see README.md Configuration.")
     # Checked first and separately from the try/except below- a missing key is a
     # configuration problem, not a network failure, so it's worth its own clear message
     # rather than being wrapped in the generic "OpenRouter generation failed" text below.
@@ -98,8 +100,17 @@ def generate_card(word: str) -> CardDraft:
                         },
                     },
                 },
-                timeout=60,
+                timeout=180,
             )
+            # 180s (was 60s)- structured-output requests under a strict JSON schema can
+            # take a lot longer than a plain chat reply if the model does heavy internal
+            # reasoning before emitting the final JSON (observed directly against
+            # OpenRouter- see PROMPTS.md change log). Note this is still a *per-read*
+            # timeout, not a wall-clock one (requests' timeout resets on every byte
+            # received, including keep-alive padding)- raising the number gives a slow-
+            # but-finite generation more room, but doesn't cap a generation that never
+            # stops. With the retry loop above, a single generate_card() call can now
+            # take up to ~360s worst case (two attempts).
             # "models" (plural, a list) is OpenRouter's own extension over the usual
             # single "model" field- OpenRouter tries each entry in MODEL_NAMES in order
             # server-side, falling through to the next one if a given model is

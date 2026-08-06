@@ -25,7 +25,7 @@ class AnkiConnectError(Exception):
 
 
 def _build_fields(card: ExportRequest) -> dict:
-    # "Basic" only has Front/Back- fold the six card fields into those two
+    # "Basic" only has Front/Back- fold the eight card fields into those two
     # until a custom Japanese note type exists in Anki (see README Configuration).
     # "Folding" in this context means to combine, flatten or merge multiple pieces of data into fewer containers.
     front = f"{card.expression}"
@@ -33,6 +33,8 @@ def _build_fields(card: ExportRequest) -> dict:
         f"<b>Reading:</b> {card.reading}<br>"
         f"<b>Definition:</b> {card.definition}<br>"
         f"<b>Nuance:</b> {card.nuance}<br>"
+        f"<b>Synonyms:</b> {card.synonyms}<br>"
+        f"<b>Antonyms:</b> {card.antonyms}<br>"
         f"<b>Example:</b> {card.example}<br>"
         f"<b>JLPT:</b> {card.jlpt}"
     )
@@ -44,28 +46,49 @@ def _build_fields(card: ExportRequest) -> dict:
     return {"Front": front, "Back": back}
 
 
-def export_card(card: ExportRequest) -> None:
-    payload = {
-        "action": "addNote",
-        "version": 6,
-        "params": {
-            "note": {
-                "deckName": DECK_NAME,
-                "modelName": NOTE_TYPE,
-                "fields": _build_fields(card),
-                "options": {"allowDuplicate": False},
-                "tags": ["anki-tool-v2"],
-            }
-        },
-    }
-    # This whole dict is AnkiConnect's own request contract, not something invented by
-    # this project- every AnkiConnect call is a POST with this "action"/"version"/
-    # "params" envelope, regardless of which action is being invoked (addNote here).
-    # "modelName" is AnkiConnect's own term for what this project (and Anki's UI) calls
-    # a "note type"- NOTE_TYPE is passed in under that key because that's the name the
-    # API itself expects, not a naming inconsistency in this codebase.
-    # allowDuplicate: False means AnkiConnect will reject (rather than silently accept)
-    # a note that already exists in the deck- see the raise below for how that surfaces.
+def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
+    if anki_note_id is None:
+        payload = {
+            "action": "addNote",
+            "version": 6,
+            "params": {
+                "note": {
+                    "deckName": DECK_NAME,
+                    "modelName": NOTE_TYPE,
+                    "fields": _build_fields(card),
+                    "options": {"allowDuplicate": False},
+                    "tags": ["anki-tool-v2"],
+                }
+            },
+        }
+    else:
+        payload = {
+            "action": "updateNoteFields",
+            "version": 6,
+            "params": {
+                "note": {
+                    "id": anki_note_id,
+                    "fields": _build_fields(card),
+                }
+            },
+        }
+    # anki_note_id is None- the normal case, and the only case before this parameter
+    # existed- means there's no existing Anki note to target, so this builds a fresh
+    # addNote call exactly as before. A caller (backend/main.py's /export route) that
+    # already knows this word has an export history passes the note ID AnkiConnect
+    # assigned last time instead, which switches this to updateNoteFields- AnkiConnect's
+    # own action for overwriting an existing note's fields in place. Note the shape
+    # difference: updateNoteFields only takes {id, fields}, not deckName/modelName/
+    # options/tags- those describe where/how to *create* a note, which doesn't apply
+    # when the note already exists and is just being rewritten.
+    # This whole dict is AnkiConnect's own request contract either way, not something
+    # invented by this project- every AnkiConnect call is a POST with this "action"/
+    # "version"/"params" envelope. "modelName" is AnkiConnect's own term for what this
+    # project (and Anki's UI) calls a "note type"- NOTE_TYPE is passed in under that key
+    # because that's the name the API itself expects, not a naming inconsistency here.
+    # allowDuplicate: False (addNote only) means AnkiConnect will reject rather than
+    # silently accept a note that already exists in the deck- see the raise below for
+    # how that surfaces.
 
     try:
         response = requests.post(ANKICONNECT_URL, json=payload, timeout=10)
@@ -89,3 +112,11 @@ def export_card(card: ExportRequest) -> None:
     # as a duplicate. data.get("error") returns None (falsy) when nothing went wrong, or
     # AnkiConnect's error message string when something did- exactly the case
     # test_export_card_raises_on_anki_error in tests/test_anki.py exercises.
+
+    return data["result"] if anki_note_id is None else anki_note_id
+    # addNote's own "result" is the new note's ID, assigned by Anki- that's the value the
+    # caller needs to persist (see record_export() in backend/db.py) so a *later*
+    # re-export can target this exact note. updateNoteFields' "result" is just null on
+    # success (it doesn't hand back an ID, since the caller already supplied one)- so in
+    # that branch, the note ID to persist is simply the same anki_note_id passed in,
+    # unchanged.

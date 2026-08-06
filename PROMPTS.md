@@ -27,8 +27,8 @@ needed.
 
 ## Card generation prompt
 
-All four generation features (definition, nuance, example sentence, JLPT
-estimate) are requested in a single call; see `backend/llm.py`.
+All six generation features (definition, nuance, synonyms, antonyms, example
+sentence, JLPT estimate) are requested in a single call; see `backend/llm.py`.
 
 **Prompt template:**
 
@@ -43,6 +43,8 @@ estimate) are requested in a single call; see `backend/llm.py`.
 - reading: 「{word}」のひらがなでの読み方
 - definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)
 - nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明
+- synonyms: 「{word}」の類義語(似た意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
+- antonyms: 「{word}」の対義語(反対の意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
 - example_sentence: 「{word}」を使った自然な例文。ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
 - jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)
 
@@ -100,3 +102,29 @@ distinct from Ollama's `format` parameter used previously.
   exhausted, check `https://openrouter.ai/api/v1/models` for current
   `:free` models with `response_format` support and update
   `OPENROUTER_MODELS`.
+- 2026-08-06: added `synonyms`/`antonyms` as two new requested fields
+  (`backend/models.py::CardDraft`), for ease of understanding versus similar
+  and opposite words. Requested in the same call as everything else,
+  inserted between `nuance` and `example_sentence` in both the prompt and
+  the schema; instructed to write "該当なし" instead of leaving the field
+  blank when a word genuinely has no synonyms/antonyms (e.g. many proper
+  nouns). Not yet verified end-to-end against a live OpenRouter response-
+  the schema/prompt changes only have the existing (mocked) test suite
+  behind them so far.
+- 2026-08-06: while attempting the live verification above, `/generate`
+  hung well past `backend/llm.py`'s stated 60s timeout with no response.
+  Isolated with `curl` directly against OpenRouter (bypassing this
+  project's code entirely) using the exact same structured-output request:
+  HTTP 200 arrived almost instantly, but the response body was a long
+  stream of whitespace padding with the real JSON never arriving even
+  after 45+ seconds. Root cause: `requests`' `timeout=` is a *per-read*
+  timeout (resets on every byte received, including keep-alive padding),
+  not a wall-clock one- it can't catch a slow-but-still-trickling
+  response, only a genuinely silent connection. Raised the timeout from
+  60s to 180s to give a heavy-reasoning model more room to finish (see
+  `backend/llm.py`); this doesn't fully solve the underlying gap (a
+  generation that trickles padding indefinitely would still hang, just
+  for up to 180s instead of 60s per attempt), only widens it. A true
+  wall-clock cap would need a different mechanism (e.g. running the
+  request in a worker with its own hard deadline)- not implemented, since
+  the immediate ask was just more headroom, not a full fix.

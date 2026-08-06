@@ -30,9 +30,18 @@ const fields = {
 	reading: document.getElementById("f-reading"),
 	definition: document.getElementById("f-definition"),
 	nuance: document.getElementById("f-nuance"),
+	synonyms: document.getElementById("f-synonyms"),
+	antonyms: document.getElementById("f-antonyms"),
 	example: document.getElementById("f-example"),
 	jlpt: document.getElementById("f-jlpt"),
 };
+
+let currentWordId = null;
+// Not part of `fields` above- word_id isn't a visible/editable form field, it's the
+// Postgres word this card belongs to (see backend/models.py's GenerateResponse). Held
+// here as plain state rather than a hidden form field so exportBtn's handler below can
+// read it without also having to filter it out of `fields`- generateBtn's handler sets
+// this on every response, rejectBtn's handler clears it back to null.
 
 // Small shared helpers for the single-word flow's status message box (index.html's
 // #statusBox)- `type` is expected to be "error" or "info", matching the CSS classes
@@ -95,24 +104,50 @@ generateBtn.addEventListener("click", async () => {
 		// turned into a thrown error to be caught by the catch block below.
 
 		const data = await response.json();
-		// This is the field-name bridge in action: the keys on the right (data.expression,
-		// data.reading, data.definition_ja, ...) are CardDraft's field names exactly as
+		// backend/main.py's /generate route now returns GenerateResponse (backend/models.py):
+		// {word_id, duplicate, card}, not a bare CardDraft- data.card is where the eight
+		// generated fields actually live now, one level deeper than before. word_id and
+		// duplicate aren't consumed here yet- they're threaded through the review form once
+		// /export is wired up to use them (see ROADMAP.md).
+		const card = data.card;
+		currentWordId = data.word_id;
+		// Captured here, before anything else touches `data`- this is the one place the
+		// backend ever tells the frontend which word this card is (see GenerateResponse
+		// in backend/models.py). exportBtn's handler below reads currentWordId when the
+		// user eventually clicks Export, whether or not they edited any fields first.
+		// This is the field-name bridge in action: the keys on the right (card.expression,
+		// card.reading, card.definition_ja, ...) are CardDraft's field names exactly as
 		// backend/main.py's /generate route returns them, while the `fields.*` targets on
 		// the left are this project's ExportRequest-shaped form fields (see the `fields`
 		// object above)- definition_ja becomes fields.definition, example_sentence becomes
-		// fields.example, jlpt_level becomes fields.jlpt.
-		fields.expression.value = data.expression ?? word;
-		fields.reading.value = data.reading ?? "";
-		fields.definition.value = data.definition_ja ?? "";
-		fields.nuance.value = data.nuance ?? "";
-		fields.example.value = data.example_sentence ?? "";
-		fields.jlpt.value = data.jlpt_level ?? "";
+		// fields.example, jlpt_level becomes fields.jlpt. synonyms/antonyms are named the
+		// same on both sides, so those two just pass straight through.
+		fields.expression.value = card.expression ?? word;
+		fields.reading.value = card.reading ?? "";
+		fields.definition.value = card.definition_ja ?? "";
+		fields.nuance.value = card.nuance ?? "";
+		fields.synonyms.value = card.synonyms ?? "";
+		fields.antonyms.value = card.antonyms ?? "";
+		fields.example.value = card.example_sentence ?? "";
+		fields.jlpt.value = card.jlpt_level ?? "";
 		// `??` is the nullish-coalescing operator- it falls back to the right-hand value
 		// only when the left side is specifically null or undefined (unlike `||`, which
-		// would also fall back on an empty string or 0). `data.expression ?? word` falls
+		// would also fall back on an empty string or 0). `card.expression ?? word` falls
 		// back to the word the user actually typed if the backend response is somehow
 		// missing that field; the rest fall back to an empty string so a missing field
 		// shows a blank, editable box instead of the literal text "undefined".
+
+		if (data.duplicate) {
+			showStatus(
+				"This word already has a saved card- showing the existing one.",
+				"info",
+			);
+		}
+		// A minimal, non-blocking heads-up for now: duplicate=true means these fields came
+		// from Postgres rather than a fresh OpenRouter call (see backend/main.py). The
+		// fuller cancel-vs-edit decision flow described in ARCHITECTURE.md is a separate,
+		// not-yet-built step- this just stops the duplicate case from looking identical to
+		// a freshly generated card with no indication anything different happened.
 
 		cardBox.classList.add("visible");
 		// .card.visible is what actually makes this box render at all- see index.html's
@@ -139,15 +174,19 @@ rejectBtn.addEventListener("click", () => {
 	cardBox.classList.remove("visible");
 	wordInput.value = "";
 	clearStatus();
+	currentWordId = null;
 });
 // Discarding a card never contacts the backend at all- the draft only ever existed in
 // the form fields client-side, so "rejecting" it is just hiding the box and resetting
 // the input for the next word.
 
 exportBtn.addEventListener("click", async () => {
-	const payload = Object.fromEntries(
-		Object.entries(fields).map(([key, el]) => [key, el.value]),
-	);
+	const payload = {
+		...Object.fromEntries(
+			Object.entries(fields).map(([key, el]) => [key, el.value]),
+		),
+		word_id: currentWordId,
+	};
 	// Object.entries(fields) turns {expression: <input>, reading: <input>, ...} into
 	// [["expression", <input>], ["reading", <input>], ...]; .map(...) replaces each
 	// element with its current .value, giving [["expression", "大人"], ...];
@@ -155,7 +194,10 @@ exportBtn.addEventListener("click", async () => {
 	// {expression: "大人", reading: "おとな", ...}. The net effect: read every field's
 	// live value out of the DOM into one plain object, keyed exactly like ExportRequest
 	// (backend/models.py)- which is why this payload can be sent to /export as-is with
-	// no further renaming, unlike the /generate response above.
+	// no further renaming, unlike the /generate response above. word_id is spread in
+	// separately since it's not a DOM field (see currentWordId above)- ExportRequest
+	// accepts it as optional, so this is currentWordId's value whether that's a real ID
+	// or still null (e.g. if generation somehow never set it).
 
 	try {
 		const response = await fetch(`${BACKEND_URL}/export`, {
@@ -221,12 +263,14 @@ function buildCarouselCard(result) {
 	// fieldDefs pairs each ExportRequest-shaped key with its display label and which
 	// HTML tag to build for it ("input" for single-line fields, "textarea" for the
 	// longer free-text ones)- driving the loop below instead of repeating near-identical
-	// field-building code six times by hand.
+	// field-building code eight times by hand.
 	const fieldDefs = [
 		["expression", "Expression", "input"],
 		["reading", "Reading", "input"],
 		["definition", "Monolingual Definition", "textarea"],
 		["nuance", "Nuance", "textarea"],
+		["synonyms", "Synonyms", "textarea"],
+		["antonyms", "Antonyms", "textarea"],
 		["example", "Example Sentence", "textarea"],
 		["jlpt", "JLPT Level", "input"],
 	];
@@ -235,12 +279,15 @@ function buildCarouselCard(result) {
 	// result's card instead of a single /generate response- result.card is CardDraft-
 	// shaped (definition_ja, example_sentence, jlpt_level), mapped here into the
 	// ExportRequest-shaped keys (definition, example, jlpt) that fieldDefs and the
-	// eventual /export payload both use.
+	// eventual /export payload both use. synonyms/antonyms pass straight through, same
+	// reasoning as generateBtn's handler above.
 	const values = {
 		expression: result.card.expression,
 		reading: result.card.reading,
 		definition: result.card.definition_ja,
 		nuance: result.card.nuance,
+		synonyms: result.card.synonyms,
+		antonyms: result.card.antonyms,
 		example: result.card.example_sentence,
 		jlpt: result.card.jlpt_level,
 	};

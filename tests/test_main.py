@@ -1,4 +1,5 @@
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import ANY, patch
 
 from backend.anki import AnkiConnectError
 from backend.batch import BatchValidationError
@@ -18,22 +19,72 @@ from backend.models import BatchCardResult, CardDraft
 
 def test_generate_route_returns_card(client, sample_card_json):
     card = CardDraft(**sample_card_json)
-    with patch("backend.main.generate_card", return_value=card):
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch("backend.main.generate_card", return_value=card),
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card") as mock_insert_card,
+    ):
         response = client.post("/generate", json={"word": "大人"})
     assert response.status_code == 200
-    assert response.json()["expression"] == "大人"
+    body = response.json()
+    assert body["word_id"] == 1
+    assert body["duplicate"] is False
+    assert body["card"]["expression"] == "大人"
+    mock_insert_card.assert_called_once()
     # `client` comes from the `client` fixture in conftest.py- a TestClient wrapping the real
     # FastAPI() app object from backend/main.py. Posting to "/generate" runs backend/main.py's
-    # actual generate() route function in-process; only generate_card underneath it is mocked.
+    # actual generate() route function in-process. find_word_by_kanji is mocked to return None
+    # (no existing record) so the route takes the fresh-generation branch; insert_word/
+    # insert_card are mocked too so this test never touches a real database- it's only
+    # checking that the route calls the right functions and shapes the response correctly,
+    # the same scope test_db.py-style DB tests would leave to their own file instead.
+
+
+def test_generate_route_returns_existing_card_without_calling_llm(
+    client, sample_card_json
+):
+    existing_word = SimpleNamespace(id=7, kanji="大人", reading=sample_card_json["reading"])
+    existing_card = SimpleNamespace(
+        definition_ja=sample_card_json["definition_ja"],
+        nuance=sample_card_json["nuance"],
+        synonyms=sample_card_json["synonyms"],
+        antonyms=sample_card_json["antonyms"],
+        example_sentence=sample_card_json["example_sentence"],
+        jlpt_level=sample_card_json["jlpt_level"],
+    )
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=existing_word),
+        patch("backend.main.get_card", return_value=existing_card),
+        patch("backend.main.generate_card") as mock_generate_card,
+    ):
+        response = client.post("/generate", json={"word": "大人"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["word_id"] == 7
+    assert body["duplicate"] is True
+    assert body["card"]["expression"] == "大人"
+    mock_generate_card.assert_not_called()
+    # The duplicate-check branch: find_word_by_kanji returning something means the word's
+    # already in Postgres, so the route must build its response from that (via get_card)
+    # without ever calling generate_card- this is the token-saving short-circuit the whole
+    # DB-lookup-before-generation change exists for, so it's worth asserting on directly
+    # rather than just checking the response body. SimpleNamespace stands in for the real
+    # SQLAlchemy Word/Card rows here since the route only reads plain attributes off them.
 
 
 def test_generate_route_maps_llm_error_to_502(client):
-    with patch("backend.main.generate_card", side_effect=LLMError("boom")):
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch("backend.main.generate_card", side_effect=LLMError("boom")),
+    ):
         response = client.post("/generate", json={"word": "大人"})
     assert response.status_code == 502
     assert response.json()["detail"] == "boom"
     # backend/main.py's generate() route catches LLMError specifically and re-raises it as
     # HTTPException(status_code=502, detail=str(exc))- this checks that mapping directly.
+    # find_word_by_kanji is mocked to return None so the route actually reaches generate_card
+    # in the first place, same reasoning as test_generate_route_returns_card above.
 
 
 def test_generate_batch_route_returns_results(client, sample_card_json):
@@ -66,20 +117,76 @@ def test_generate_batch_route_maps_validation_error_to_400(client):
 
 
 def test_export_route_succeeds(client, sample_export_request):
-    with patch("backend.main.export_card", return_value=None):
+    with (
+        patch("backend.main.export_card", return_value=None) as mock_export_card,
+        patch("backend.main.get_latest_export") as mock_get_latest_export,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
         response = client.post("/export", json=sample_export_request.model_dump())
     assert response.status_code == 200
     assert response.json() == {"status": "exported"}
-    # sample_export_request (from conftest.py) is a real ExportRequest object, but
-    # client.post(json=...) needs a plain dict to serialize into the request body-
-    # .model_dump() converts the Pydantic model back into one. export_card returning None here
-    # mirrors its real signature (-> None)- the route itself builds the response body.
+    mock_get_latest_export.assert_not_called()
+    mock_record_export.assert_not_called()
+    mock_export_card.assert_called_once_with(ANY, anki_note_id=None)
+    # sample_export_request (from conftest.py) leaves word_id at its default of None (see
+    # ExportRequest in backend/models.py)- the same shape a batch-flow export currently
+    # sends, since batch cards have no word_id yet (see backend/models.py's comment on
+    # why). With no word_id, the route must skip both DB calls entirely rather than error-
+    # that's the current, intentional fallback behavior for batch exports, not a gap in
+    # this test. client.post(json=...) needs a plain dict, hence .model_dump().
 
 
 def test_export_route_maps_anki_error_to_503(client, sample_export_request):
-    with patch("backend.main.export_card", side_effect=AnkiConnectError("unreachable")):
+    with (
+        patch("backend.main.export_card", side_effect=AnkiConnectError("unreachable")),
+        patch("backend.main.record_export") as mock_record_export,
+    ):
         response = client.post("/export", json=sample_export_request.model_dump())
     assert response.status_code == 503
     assert response.json()["detail"] == "unreachable"
+    mock_record_export.assert_not_called()
     # backend/main.py's export() route catches AnkiConnectError specifically and re-raises it
     # as HTTPException(status_code=503, detail=str(exc))- this checks that final mapping.
+    # record_export() must never run here- a failed AnkiConnect call means nothing was
+    # actually exported, so nothing should be recorded either (see the ordering note in
+    # backend/main.py's export() route).
+
+
+def test_export_route_records_new_note_when_no_prior_export(client, sample_export_request):
+    payload = {**sample_export_request.model_dump(), "word_id": 5}
+    with (
+        patch("backend.main.get_latest_export", return_value=None),
+        patch("backend.main.export_card", return_value=555) as mock_export_card,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    mock_export_card.assert_called_once_with(ANY, anki_note_id=None)
+    mock_record_export.assert_called_once_with(5, 555)
+    # word_id=5 with get_latest_export returning None means this word has never been
+    # exported before- export_card() is called with anki_note_id=None (addNote, per
+    # backend/anki.py), and whatever note ID it returns (555, mocked here as if
+    # AnkiConnect assigned it) gets recorded against word_id 5.
+
+
+def test_export_route_updates_existing_note_when_prior_export_exists(
+    client, sample_export_request
+):
+    payload = {**sample_export_request.model_dump(), "word_id": 5}
+    with (
+        patch(
+            "backend.main.get_latest_export",
+            return_value=SimpleNamespace(anki_note_id=777),
+        ),
+        patch("backend.main.export_card", return_value=777) as mock_export_card,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        response = client.post("/export", json=payload)
+    assert response.status_code == 200
+    mock_export_card.assert_called_once_with(ANY, anki_note_id=777)
+    mock_record_export.assert_called_once_with(5, 777)
+    # get_latest_export returning a prior export (note ID 777) means export_card() must be
+    # called with that anki_note_id- switching it to updateNoteFields (backend/anki.py)
+    # instead of addNote, so the existing Anki note gets rewritten rather than duplicated.
+    # A new exports row still gets recorded afterwards (record_export), per the "one row
+    # per export event" design in DATABASE.md- re-exporting isn't exempt from history.

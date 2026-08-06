@@ -19,6 +19,12 @@ class CardDraft(BaseModel):
     nuance: str = Field(
         description="Usage notes, formality, and nuance versus similar words"
     )
+    synonyms: str = Field(
+        description='Synonyms (similar-meaning words), comma-separated; "該当なし" if none apply'
+    )
+    antonyms: str = Field(
+        description='Antonyms (opposite-meaning words), comma-separated; "該当なし" if none apply'
+    )
     example_sentence: str = Field(
         description="Natural example sentence, plain kanji/kana text (no furigana)"
     )
@@ -33,22 +39,48 @@ class CardDraft(BaseModel):
 # this class (raising if a field is missing or the wrong type).
 
 
+class GenerateResponse(BaseModel):
+    word_id: int
+    duplicate: bool
+    card: CardDraft
+# The response body for POST /generate. `word_id` is new here- the frontend needs to carry
+# it through to POST /export later, so the export route knows which word's export history
+# to check (see backend/db.py's get_latest_export). `duplicate` tells the frontend whether
+# `card` is a fresh LLM result or the existing pristine record already in Postgres for this
+# word (see backend/main.py's generate() route and ARCHITECTURE.md)- either way `card` is
+# populated, so the frontend never needs a second round-trip just to see what's on file.
+
+
 class ExportRequest(BaseModel):
     expression: str
     reading: str
     definition: str
     nuance: str
+    synonyms: str
+    antonyms: str
     example: str
     jlpt: str
+    word_id: int | None = None
 # The request body shape for POST /export (backend/main.py)- this is what the frontend sends
-# back after the user has reviewed/edited the generated card. Notice the field names don't
+# back after the user has reviewed/edited the generated card. Notice most field names don't
 # match CardDraft above one-for-one: definition_ja -> definition, example_sentence -> example,
 # jlpt_level -> jlpt. That's deliberate (see CLAUDE.md)- frontend/index.js is the one place
 # that bridges the two shapes, reading data.definition_ja out of the /generate response into a
 # form field literally named `definition`, then posting that field back under the `definition`
-# key on export. Renaming a field on either this class or CardDraft without updating the other
-# three places (backend/anki.py, frontend/index.js, and whichever of these two models didn't
-# change) will silently break that bridge- there's no shared constant tying the names together.
+# key on export. synonyms/antonyms are the exception- there's no CardDraft-side qualifier to
+# strip (unlike `_ja`/`_sentence`/`_level`), so both classes just use the same name and the
+# bridge is a no-op for these two. Renaming a field on either this class or CardDraft without
+# updating the other three places (backend/anki.py, frontend/index.js, and whichever of these
+# two models didn't change) will silently break that bridge- there's no shared constant tying
+# the names together.
+#
+# word_id is optional (default None), not required like the rest- the single-word flow's
+# /generate response always includes one (GenerateResponse.word_id) and frontend/index.js
+# threads it through so /export can look up export history (see the route in backend/main.py).
+# The batch flow can't do the same yet- generate_cards_batch()/BatchCardResult don't persist
+# anything to Postgres at all, so there's no word_id to send for a batch-generated card. When
+# it's missing, /export just falls back to its old behavior (plain addNote, nothing recorded)
+# rather than erroring- see backend/main.py's export() route for that branch.
 
 
 class BatchGenerateRequest(BaseModel):

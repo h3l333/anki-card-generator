@@ -40,14 +40,17 @@ def sample_card_json():
         "reading": "おとな",
         "definition_ja": "成長した人。成人であること。",
         "nuance": "日常会話・フォーマルな場面どちらでも使える語。",
+        "synonyms": "成人、大人物",
+        "antonyms": "子供、未成年",
         "example_sentence": "彼はもう大人だ。",
         "jlpt_level": "N5",
     }
 # The keys here match backend/models.py's CardDraft field names exactly (expression, reading,
-# definition_ja, nuance, example_sentence, jlpt_level)- this is the shape an OpenRouter
-# response is expected to parse into. test_llm.py uses this dict to build fake LLM API
-# responses (by JSON-encoding it into a mocked response's "content" field) rather than typing
-# out the same six fields by hand in every test.
+# definition_ja, nuance, synonyms, antonyms, example_sentence, jlpt_level)- this is the shape
+# an OpenRouter response is expected to parse into. test_llm.py uses this dict to build fake
+# LLM API responses (by JSON-encoding it into a mocked response's "content" field) rather than
+# typing out the same eight fields by hand in every test.
+# In Python, dicts or dictionaries are data structures that store info. in key-value pairs.
 
 
 @pytest.fixture
@@ -57,12 +60,15 @@ def sample_export_request():
         reading="おとな",
         definition="成長した人。成人であること。",
         nuance="日常会話・フォーマルな場面どちらでも使える語。",
+        synonyms="成人、大人物",
+        antonyms="子供、未成年",
         example="彼はもう大人だ。",
         jlpt="N5",
     )
-# Note the field names here differ from sample_card_json above (definition vs definition_ja,
+# Note most field names here differ from sample_card_json above (definition vs definition_ja,
 # example vs example_sentence, jlpt vs jlpt_level)- that's backend/models.py's ExportRequest
 # schema, the shape /export expects, as opposed to CardDraft, the shape /generate returns.
-# This fixture is a real ExportRequest instance (not a plain dict), because test_anki.py's
+# synonyms/antonyms are the same on both sides (see backend/models.py's comment on why). This
+# fixture is a real ExportRequest instance (not a plain dict), because test_anki.py's
 # _build_fields() and export_card() both expect an actual ExportRequest object with attribute
 # access (card.expression, card.reading, ...), not dictionary keys.
