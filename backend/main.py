@@ -121,7 +121,33 @@ def generate_batch(request: BatchGenerateRequest):
     except BatchValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return BatchGenerateResponse(results=generate_cards_batch(words))
+    results = generate_cards_batch(words)
+    for result in results:
+        if result.card is None:
+            continue
+        word_id = insert_word(kanji=result.word, reading=result.card.reading, source="batch")
+        insert_card(
+            word_id=word_id,
+            definition_ja=result.card.definition_ja,
+            nuance=result.card.nuance,
+            synonyms=result.card.synonyms,
+            antonyms=result.card.antonyms,
+            example_sentence=result.card.example_sentence,
+            jlpt_level=result.card.jlpt_level,
+        )
+        result.word_id = word_id
+    # Same insert_word/insert_card persistence /generate does for a single word (see the
+    # generate() route above), just looped per successful batch result. A failed word
+    # (result.card is None, result.error set instead) is skipped entirely- there's no card
+    # content to persist for it. No pre-generation duplicate check here, unlike /generate-
+    # this deliberately doesn't touch find_word_by_kanji/get_card, so a word already in
+    # Postgres still goes through generate_cards_batch() and gets a fresh LLM call and a
+    # fresh words/cards row (see ROADMAP.md: batch duplicate-checking is a separate, bigger
+    # UX decision, not assumed here). This loop only closes the export-tracking gap- giving
+    # each successful result a word_id so /export can find it via get_latest_export/
+    # record_export instead of always falling back to a bare addNote.
+
+    return BatchGenerateResponse(results=results)
 # response_model=BatchGenerateResponse (unlike the plain /generate route above) tells
 # FastAPI explicitly what shape this route's successful response should be- used here
 # to generate accurate OpenAPI docs for a route whose return type isn't otherwise

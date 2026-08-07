@@ -14,6 +14,11 @@ already been generated:
   Anki note that export produced. That's what lets a later re-export update the existing
   Anki note (`updateNoteFields`) instead of creating a duplicate one (`addNote`).
 
+**Caveat:** the "never spend an LLM call twice" goal is only enforced for the
+single-word flow today. Batch `.txt` uploads have no pre-generation duplicate check-
+every word in a batch file gets a fresh LLM call and a fresh `words`/`cards` row
+regardless of whether it's already in Postgres (see `ARCHITECTURE.md`, `ROADMAP.md`).
+
 ## Storage choice
 
 Postgres, running in its own Docker container (see `docker-compose.yml`, service
@@ -35,7 +40,7 @@ local, uncommitted `.env` file if that matters to you).
 | id         | SERIAL PK |                                     |
 | kanji      | TEXT      |                                     |
 | reading    | TEXT      |                                     |
-| source     | TEXT      | e.g. `manual` or `batch:<filename>` |
+| source     | TEXT      | `manual` (single-word flow) or `batch` (batch flow)- no filename is captured |
 | created_at | TIMESTAMP |                                     |
 
 ### `cards` (generated content)
@@ -51,8 +56,12 @@ local, uncommitted `.env` file if that matters to you).
 | jlpt_level       | TEXT    |                                                |
 | exported         | BOOLEAN | has this word ever been exported at all?      |
 
-Write-once: a row is inserted the moment the LLM responds, and never updated afterwards.
-User edits made in the review form are never written back here- see `ARCHITECTURE.md`.
+Write-once content: a row is inserted the moment the LLM responds, and its generated
+columns (`definition_ja`, `nuance`, `synonyms`, `antonyms`, `example_sentence`,
+`jlpt_level`) are never updated afterwards. User edits made in the review form are never
+written back here- see `ARCHITECTURE.md`. The one exception is `exported`: `record_export()`
+(see below) flips it to `true` after a successful export, so the row isn't literally
+immutable end to end- just its LLM-generated content.
 
 ### `exports` (export history)
 

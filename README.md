@@ -40,6 +40,23 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
 - `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields. Set up a custom note type matching the eight card fields and point these vars at it for a better fit.
 
+## Troubleshooting
+
+### Generation seems hung / never comes back
+
+`/generate`'s call to OpenRouter uses a 180s timeout that resets on every byte received (see `PROMPTS.md`), so a slow-but-still-trickling response can look stuck well past what feels reasonable. Isolate whether the delay is this project's code, your network, or the model itself by hitting OpenRouter directly with curl, bypassing the backend entirely:
+
+```bash
+curl -w "\nTTFB: %{time_starttransfer}s  Total: %{time_total}s\n" -X POST https://openrouter.ai/api/v1/chat/completions -H "Authorization: Bearer $OPENROUTER_API_KEY" -H "Content-Type: application/json" -d '{"models":["google/gemma-4-26b-a4b-it:free"],"messages":[{"role":"user","content":"say hello"}]}'
+```
+
+- **Curl comes back fast, the app doesn't:** the delay is in this project's code (check whether `generate_card()`'s word-drift retry fired twice- see `backend/llm.py`) or something local (network path, machine load), not the model or OpenRouter itself.
+- **Curl is slow too, with a low TTFB but long total time:** the model is genuinely taking a while to reason before emitting the final JSON- a model/provider characteristic, not a bug here.
+- **Curl is slow with a high TTFB:** the request itself is taking a while to get any response- more likely your network path or OpenRouter-side queueing than the model actively working.
+- **Plain chat (drop `response_format` from the payload above) is fast but structured output is slow:** the `json_schema` structured-output requirement is adding the overhead, not a bug in this project.
+
+See `PROMPTS.md`'s change log for the incident that established this technique.
+
 ## Project docs
 
 - [PROJECT.md](PROJECT.md): goals and scope.

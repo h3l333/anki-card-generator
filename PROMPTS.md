@@ -127,4 +127,20 @@ distinct from Ollama's `format` parameter used previously.
   for up to 180s instead of 60s per attempt), only widens it. A true
   wall-clock cap would need a different mechanism (e.g. running the
   request in a worker with its own hard deadline)- not implemented, since
-  the immediate ask was just more headroom, not a full fix.
+  the immediate ask was just more headroom, not a full fix. The direct-curl
+  isolation technique used to diagnose this (bypass the backend, hit
+  OpenRouter's endpoint straight, compare time-to-first-byte against total
+  time) is now documented as a general troubleshooting step in README.md's
+  Troubleshooting section- worth reaching for again any time generation
+  seems hung, not just this one incident.
+- 2026-08-07: with Postgres actually running and the 180s timeout in place,
+  live-verified `/generate` against a real OpenRouter response for the
+  current eight-field `CardDraft` shape (including `synonyms`/`antonyms`)-
+  generation is slow but does complete, and all eight fields come back
+  correctly. Separately, OpenRouter has been observed occasionally
+  returning malformed JSON for a given attempt, which surfaces as a normal
+  `LLMError` (`CardDraft.model_validate_json` raising inside
+  `generate_card()`- see `backend/llm.py`); in testing so far, simply
+  regenerating the same word via the single-word form has been enough to
+  succeed on the next attempt. Not being treated as a bug to fix yet- worth
+  keeping in mind, not yet worth a code change.

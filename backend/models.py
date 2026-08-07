@@ -94,11 +94,20 @@ class BatchCardResult(BaseModel):
     word: str
     card: CardDraft | None = None
     error: str | None = None
+    word_id: int | None = None
 # One entry per word in a batch request. `card` and `error` are mutually exclusive in
 # practice- backend/llm.py::generate_cards_batch sets exactly one of the two per word
 # (whichever a given word's generate_card() call actually produced), never both and never
 # neither. Both default to None so a BatchCardResult can be constructed with only the field
 # that applies to that word's outcome.
+# word_id starts None (generate_cards_batch/llm.py has no db.py dependency and doesn't set
+# it) and is filled in afterwards by backend/main.py's /generate/batch route for any result
+# that has a card, mirroring /generate's insert_word/insert_card step. A failed word (error
+# set, card None) keeps word_id at None- there's nothing to persist for it. This is what lets
+# frontend/index.js's buildCarouselCard() include a word_id in that card's own Export payload,
+# same as the single-word flow's currentWordId, so a batch export can be tracked/updated via
+# backend/db.py's get_latest_export/record_export instead of always falling back to a bare
+# addNote.
 
 
 class BatchGenerateResponse(BaseModel):

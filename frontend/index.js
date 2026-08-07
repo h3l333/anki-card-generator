@@ -218,7 +218,7 @@ exportBtn.addEventListener("click", async () => {
 	}
 });
 
-// --- Batch upload (.txt) flow below- a separate set of elements/status box from the
+// Batch upload (.txt) flow below- a separate set of elements/status box from the
 // single-word flow above, since both sections are shown on the page at the same time
 // and need independent status messages.
 const fileInput = document.getElementById("fileInput");
@@ -250,14 +250,31 @@ function buildCarouselCard(result) {
 	label.textContent = result.word;
 	card.appendChild(label);
 
+	const cardWordId = result.word_id ?? null;
+	// Mirrors currentWordId in the single-word flow above, just scoped to this one
+	// carousel card via closure instead of a shared module-level variable- each card
+	// needs its own, since a batch response can carry a different word_id per result
+	// (backend/models.py's BatchCardResult). Falls back to null the same way a missing/
+	// failed generation would, so a card built before this field existed (or for a word
+	// that somehow has no card) still posts a valid ExportRequest.word_id.
+
 	if (result.error) {
 		const errorText = document.createElement("div");
 		errorText.textContent = result.error;
 		card.appendChild(errorText);
+
+		const retryHint = document.createElement("div");
+		retryHint.className = "retry-hint";
+		retryHint.textContent =
+			"Try generating this word on its own using the single-word form above- " +
+			"a solo request sometimes succeeds where a batch entry failed (malformed " +
+			"JSON, transient API error, etc).";
+		card.appendChild(retryHint);
+
 		return card;
-		// Early return- a failed word gets just its word label plus the error message,
-		// never the editable fields or Discard/Export buttons below, since there's no
-		// card content to review or export for a word that failed to generate.
+		// Early return- a failed word gets its word label, the error message, and a
+		// retry hint, never the editable fields or Discard/Export buttons below, since
+		// there's no card content to review or export for a word that failed to generate.
 	}
 
 	// fieldDefs pairs each ExportRequest-shaped key with its display label and which
@@ -330,12 +347,20 @@ function buildCarouselCard(result) {
 	const cardExportBtn = document.createElement("button");
 	cardExportBtn.textContent = "Export to Anki";
 	cardExportBtn.addEventListener("click", async () => {
-		const payload = Object.fromEntries(
-			Object.entries(cardFields).map(([key, el]) => [key, el.value]),
-		);
+		const payload = {
+			...Object.fromEntries(
+				Object.entries(cardFields).map(([key, el]) => [key, el.value]),
+			),
+			word_id: cardWordId,
+		};
 		// Same Object.entries -> map -> Object.fromEntries pattern as exportBtn's handler
 		// above, just reading from this card's own `cardFields` (a closure variable
 		// captured from the loop above) instead of the single-word flow's shared `fields`.
+		// word_id spread in the same way exportBtn's handler does it- now that backend/
+		// main.py's /generate/batch route persists each successful card and returns a
+		// word_id (see backend/models.py's BatchCardResult), a batch export can be tracked/
+		// updated via get_latest_export/record_export too, instead of always being a bare
+		// addNote with nothing recorded.
 
 		try {
 			const response = await fetch(`${BACKEND_URL}/export`, {

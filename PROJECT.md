@@ -15,7 +15,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 - **Monolingual Definition:** Generate Japanese-to-Japanese definitions appropriate for intermediate/advanced learners.
 - **Nuance Explanation:** Detail usage notes, formality, and subtle differences between similar words.
 - **Synonyms & Antonyms:** Surface similar- and opposite-meaning words alongside the target word, for ease of understanding.
-- **Context Sentences:** Generate natural example sentences with furigana/readings.
+- **Context Sentences:** Generate natural example sentences, plain kanji/kana text with no furigana (see `PROMPTS.md`- furigana was deliberately dropped from the prompt after the model invented ad hoc notation for it).
 - **JLPT Estimation:** Estimate the JLPT level (N5 to N1) for the target word.
 
 ### 2. User Input & Workflow
@@ -59,7 +59,7 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 ### Data Persistence
 
-- **Database:** Postgres running in its own Docker container (see `DATABASE.md`) to save history, card drafts, and app configurations.
+- **Database:** Postgres running in its own Docker container (see `DATABASE.md`) to save history and card drafts.
 
 ### App Deployment (Current Phase)
 
@@ -77,7 +77,8 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
 
 ## Error Handling & Resiliency Expectations
 
-The UI must present explicit, user-friendly error dialogs/notifications for key failure points:
+This section describes the error messages `frontend/index.js` actually shows today, not a separate target spec- update it alongside any change to that file's error handling.
 
-- **Anki Connection Failure:** If Anki is closed or AnkiConnect is unreachable, prompt the user: _"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled."_
-- **LLM Parsing Error:** If the LLM API returns invalid or malformed JSON, inform the user: _"Failed to parse LLM response due to formatting errors. Please retry generation."_
+- **Anki Connection Failure:** if Anki is closed or AnkiConnect is unreachable, both the single-word and batch export flows show the same message: _"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled."_
+- **Generation Failure (single word):** network failures and LLM/parsing failures aren't distinguished- both surface the same generic message: _"Failed to reach the backend or parse its response. Is the Python service running?"_
+- **Generation Failure (batch, per word):** shows the backend's specific error detail when one is available (e.g. a malformed-JSON or word-drift message raised by `backend/llm.py`), falling back to a generic _"Failed to reach the backend..."_ message otherwise. One word's failure doesn't abort the rest of the batch, and its carousel card shows a hint recommending the user retry that word via the single-word form.

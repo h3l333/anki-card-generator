@@ -93,15 +93,41 @@ def test_generate_batch_route_returns_results(client, sample_card_json):
     with (
         patch("backend.main.parse_and_validate", return_value=["大人"]),
         patch("backend.main.generate_cards_batch", return_value=results),
+        patch("backend.main.insert_word", return_value=9) as mock_insert_word,
+        patch("backend.main.insert_card") as mock_insert_card,
     ):
         response = client.post("/generate/batch", json={"file_content": "大人"})
     assert response.status_code == 200
-    assert response.json()["results"][0]["word"] == "大人"
-    # /generate/batch calls two backend functions in sequence (parse_and_validate, then
-    # generate_cards_batch)- both need mocking here since this test is only about the route's
-    # wiring, not either function's own internal logic. Python lets multiple context managers
-    # be combined in one `with (...)` block using parentheses, instead of nesting or using a
-    # backslash line continuation.
+    body = response.json()["results"][0]
+    assert body["word"] == "大人"
+    assert body["word_id"] == 9
+    mock_insert_word.assert_called_once_with(kanji="大人", reading=card.reading, source="batch")
+    mock_insert_card.assert_called_once()
+    # /generate/batch calls parse_and_validate then generate_cards_batch, same as before-
+    # both still need mocking here since this test is only about the route's wiring, not
+    # either function's own internal logic. New since batch/Postgres persistence was added:
+    # insert_word/insert_card are also mocked (same as test_generate_route_returns_card
+    # does for /generate), and the response's word_id is asserted directly- that's the
+    # field the frontend now needs from a batch result to track/update a later export
+    # (see backend/models.py's BatchCardResult and frontend/index.js's buildCarouselCard).
+
+
+def test_generate_batch_route_skips_persistence_for_failed_words(client):
+    results = [BatchCardResult(word="大人", error="boom")]
+    with (
+        patch("backend.main.parse_and_validate", return_value=["大人"]),
+        patch("backend.main.generate_cards_batch", return_value=results),
+        patch("backend.main.insert_word") as mock_insert_word,
+        patch("backend.main.insert_card") as mock_insert_card,
+    ):
+        response = client.post("/generate/batch", json={"file_content": "大人"})
+    assert response.status_code == 200
+    assert response.json()["results"][0]["word_id"] is None
+    mock_insert_word.assert_not_called()
+    mock_insert_card.assert_not_called()
+    # A result with no card (generate_card failed for this word- see BatchCardResult) has
+    # nothing to persist, so the route's persistence loop must skip it entirely rather than
+    # calling insert_word/insert_card with a None card's attributes.
 
 
 def test_generate_batch_route_maps_validation_error_to_400(client):
