@@ -1,4 +1,6 @@
 # 3 FastAPI routes
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,6 +10,7 @@ from backend.db import (
     find_word_by_kanji,
     get_card,
     get_latest_export,
+    init_db,
     insert_card,
     insert_word,
     record_export,
@@ -33,7 +36,17 @@ from backend.models import (
 # spreading a single import statement with several names across multiple lines
 # without a trailing backslash on each one.
 
-app = FastAPI(title="Anki Tool v2 Backend")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # No migration tool yet (see ROADMAP.md) - this is what actually issues the
+    # CREATE TABLE statements against Postgres, since init_db() itself is never
+    # called anywhere else.
+    init_db()
+    yield
+
+
+app = FastAPI(title="Anki Tool v2 Backend", lifespan=lifespan)
 # This `app` object is what tests/conftest.py's `client` fixture wraps in a TestClient,
 # and also what `uvicorn backend.main:app` runs directly in production- there's only
 # ever one FastAPI() instance, and every route below is registered onto it via the
