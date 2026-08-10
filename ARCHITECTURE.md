@@ -7,12 +7,10 @@ flowchart TD
     UserInput[User Input] -->|single word| BrowserUI[Browser UI]
     BatchInput[".txt file upload"] -->|one word per line| BrowserUI
 
-    BrowserUI -->|"single word: HTTP request"| Lookup[Python Backend]
-    Lookup -->|"Postgres lookup by kanji, see DATABASE.md"| Duplicate{Already generated?}
+    BrowserUI -->|"single word or batch: HTTP request"| Lookup[Python Backend]
+    Lookup -->|"Postgres lookup by kanji, see DATABASE.md (per word, if batch)"| Duplicate{Already generated?}
     Duplicate -->|"yes- no LLM call"| ReviewForm["Browser UI Form<br/>USER EDITS HERE"]
     Duplicate -->|no| Generate[Python Backend]
-
-    BrowserUI -->|"batch: HTTP request, no duplicate check"| Generate
 
     Generate -->|"HTTPS prompt request (per word, if batch)"| OpenRouter[OpenRouter API]
     OpenRouter -->|structured JSON response| Persist[Python Backend]
@@ -30,11 +28,11 @@ flowchart TD
    - User inputs a single word or uploads a `.txt` file in the browser.
    - The browser passes the target word to the Python backend via HTTP.
 
-2. **Duplicate Check (single word only, before any LLM call):**
-   - Python looks the word up in Postgres (`words`/`cards`, see `DATABASE.md`) by kanji text.
+2. **Duplicate Check (before any LLM call, single word and batch alike):**
+   - Python looks the word up in Postgres (`words`/`cards`, see `DATABASE.md`) by kanji text. For a batch upload, this happens per word, before that word is ever handed to `generate_cards_batch()`.
    - **Not found:** proceed to generation (step 3) as normal- no tokens have been spent yet either way.
-   - **Found:** no LLM call is made. Python returns the existing card straight from Postgres, and the browser shows it pre-filled with an informational banner ("This word already has a saved card- showing the existing one."). The user reviews/edits/exports it exactly like a freshly generated card, or discards it via the normal Discard button- there's no separate cancel-vs-fetch choice dialog. (A fuller notify-then-choose UX was once planned here; it was never built, and this section used to describe that unbuilt version instead of what `frontend/index.js` actually does.)
-   - **Batch `.txt` upload does not do this check at all.** Every word in an uploaded file is sent to the LLM regardless of whether it's already in Postgres- there's no per-word duplicate lookup, and today no way to skip an already-generated word without spending a fresh LLM call on it. Whether to add that is a deliberate, separate decision (see `ROADMAP.md`), not assumed here.
+   - **Found:** no LLM call is made. Python returns the existing card straight from Postgres, and the browser shows it pre-filled with an informational banner ("This word already has a saved card- showing the existing one."). The user reviews/edits/exports it exactly like a freshly generated card, or discards it via the normal Discard button- there's no separate cancel-vs-fetch choice dialog. (A fuller notify-then-choose UX was once planned here for both flows; it was never built, and this section used to describe that unbuilt version instead of what `frontend/index.js` actually does.)
+   - In a batch upload, each word is checked independently: some may come back from Postgres (no LLM call, `duplicate: true` on that word's `BatchCardResult`) while others are generated fresh in the same request, preserving the file's original order in the response. Two identical words *within the same uploaded file* are not deduped against each other- only against what's already in Postgres- since neither is persisted until after generation completes.
 
 3. **LLM Execution & Parsing:**
    - Python requests structured JSON from the OpenRouter API over HTTPS- for whichever word(s) reach this step: a single word that wasn't already in Postgres (step 2), or every word in a batch upload regardless of Postgres state.

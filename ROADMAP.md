@@ -30,40 +30,44 @@ Offer a second generation mode alongside the current structured-output flow: a p
 
 - Motivated by README.md's Troubleshooting section, which already documents that dropping `response_format` from an OpenRouter request is faster than structured output- the `json_schema` requirement itself adds generation overhead, independent of model or network conditions.
 - Proposed approach: a second prompt template and a new `llm.py` function (e.g. `generate_card_plain`) that sends a plain chat request with no `response_format`, returning freeform text rather than a `CardDraft`. Surfaced via either a mode toggle on `/generate` or a separate endpoint- not yet decided which.
-- **Tradeoff:** without `response_format: json_schema` enforcing shape, there's no guarantee the response can be split into the current eight fields (`expression`, `reading`, `definition_ja`, `nuance`, `synonyms`, `antonyms`, `example_sentence`, `jlpt_level`)- likely one freeform blob instead. The user should be warned up front that plain-text output is less predictable in return for speed, mirroring the existing warning proposed for structured output being the slower option.
+- **Tradeoff:** without `response_format: json_schema` enforcing shape, there's no guarantee the response can be split into the current eight fields (`expression`, `reading`, `definition_ja`, `nuance`, `synonyms`, `antonyms`, `example_sentence`, `jlpt_level`)- likely one freeform blob instead. The user should be warned up front that plain-text output is less predictable in return for speed, mirroring the slow-generation warning `frontend/index.js` now shows for structured output (see `showStatus`/`showBatchStatus` calls in the generate handlers).
 - **UI impact:** the review form (`frontend/index.html`'s `#cardBox`) expects eight discrete `<input>`/`<textarea>` fields pre-filled from a `CardDraft`- a plain-text result wouldn't fit that shape and would need its own fallback display (e.g. a single editable text block) rather than reusing the existing per-field form as-is.
 
 ## Engineering tasks
 
-- **Batch Postgres persistence & export parity: done for persistence,
-  duplicate-check still open.** The single-word flow was already fully
-  wired to Postgres end to end- `/generate` does the duplicate check before
-  spending an LLM call and persists the raw card before any edit; `/export`
-  checks `get_latest_export()`, calls AnkiConnect's `addNote` or
+- **Batch Postgres persistence, export parity, and duplicate-check: done.**
+  The single-word flow was already fully wired to Postgres end to end-
+  `/generate` does the duplicate check before spending an LLM call and
+  persists the raw card before any edit; `/export` checks
+  `get_latest_export()`, calls AnkiConnect's `addNote` or
   `updateNoteFields` accordingly, and records the result via
   `record_export()` (see `ARCHITECTURE.md`, `frontend/index.js`'s
-  `currentWordId`). Batch now matches it on the persistence/export-tracking
-  side: `/generate/batch`'s route (`backend/main.py`) calls
-  `insert_word`/`insert_card` for each successfully-generated
-  `BatchCardResult` and sets that result's `word_id` (`backend/models.py`);
-  `generate_cards_batch()` itself (`backend/llm.py`) still never touches
-  `db.py`- the persistence loop lives in the route, keeping that layering
-  intact rather than pushing a DB dependency down into `llm.py`.
-  `frontend/index.js`'s `buildCarouselCard()` threads that `word_id` into a
-  closure-scoped `cardWordId`, included in that card's own Export payload,
-  mirroring `currentWordId` in the single-word flow. A batch export can now
-  be tracked/updated via `get_latest_export`/`record_export` exactly like a
-  single-word export. `tests/test_main.py` covers both the persistence call
-  and the failed-word (no card, no persistence) case.
-  - **Still open, deliberately not included above: pre-generation
-    duplicate-checking for batch.** `/generate/batch` never calls
-    `find_word_by_kanji`/`get_card`, so every word in a batch file still
-    gets a fresh LLM call regardless of whether it's already in Postgres-
-    unlike `/generate`. Adding that (skip the LLM call per already-seen
-    word, notify, sequential cancel/fetch-and-edit prompts- the fuller
-    design discussed earlier in the project) is bigger UX scope than the
-    persistence/`word_id` parity above, and still worth deciding explicitly
-    rather than assuming it's wanted.
+  `currentWordId`). Batch now matches it on all three counts:
+  - **Persistence/export parity:** `/generate/batch`'s route
+    (`backend/main.py`) calls `insert_word`/`insert_card` for each
+    successfully-generated `BatchCardResult` and sets that result's
+    `word_id` (`backend/models.py`). `frontend/index.js`'s
+    `buildCarouselCard()` threads that `word_id` into a closure-scoped
+    `cardWordId`, included in that card's own Export payload, mirroring
+    `currentWordId` in the single-word flow. A batch export can now be
+    tracked/updated via `get_latest_export`/`record_export` exactly like a
+    single-word export.
+  - **Pre-generation duplicate-check:** `/generate/batch`'s route now
+    calls `find_word_by_kanji`/`get_card` per word before deciding what to
+    hand to `generate_cards_batch()`- a hit is reassembled into a
+    `BatchCardResult` straight from Postgres (`duplicate: true`, `word_id`
+    already set, no LLM call), a miss is generated fresh, and the response
+    preserves the uploaded file's original word order either way. This
+    deliberately took the passive auto-fill UX the single-word flow already
+    uses (see `ARCHITECTURE.md`), not the heavier notify-then-choose design
+    once floated for this- `generate_cards_batch()` (`backend/llm.py`)
+    still never touches `db.py`, keeping the duplicate check in the route
+    and that layering intact. Two identical words *within one uploaded
+    file* are still not deduped against each other, only against Postgres-
+    same as `parse_and_validate` already leaves unhandled, not a new gap.
+  - `tests/test_main.py` covers persistence, the failed-word (no card, no
+    persistence) case, and the duplicate-word case (no LLM call, no
+    re-persistence, correct response order).
   - Still missing regardless of the above: a `tests/test_db.py` suite
     exercising `backend/db.py` directly against a real database.
 - **UML diagrams:** Diagram the repo's structure and data flow to make the

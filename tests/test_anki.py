@@ -49,6 +49,37 @@ def test_build_fields_folds_card_into_front_and_back(sample_export_request):
     # This test never touches requests.post at all- _build_fields does no I/O, so it can be
     # called directly and its return value checked, with no mocking needed.
 
+
+# Checks the "full" ANKI_EXPORT_MODE branch: each of the eight fields should be sent to
+# Anki individually, keyed by capitalized field names matching a custom note type, rather
+# than folded into Front/Back.
+def test_build_fields_sends_each_field_individually_in_full_mode(
+    sample_export_request, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "full")
+    fields = _build_fields(sample_export_request)
+    assert fields == {
+        "Expression": "大人",
+        "Reading": "おとな",
+        "Definition": "成長した人。成人であること。",
+        "Nuance": "日常会話・フォーマルな場面どちらでも使える語。",
+        "Synonyms": "成人、大人物",
+        "Antonyms": "子供、未成年",
+        "Example": "彼はもう大人だ。",
+        "Jlpt": "N5",
+    }
+    assert "Front" not in fields
+    assert "Back" not in fields
+
+
+# An ANKI_EXPORT_MODE that's neither "basic" nor "full" is a config mistake- _build_fields
+# should raise clearly rather than silently falling back to one mode or the other.
+def test_build_fields_raises_on_invalid_export_mode(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "bogus")
+    with pytest.raises(ValueError, match="ANKI_EXPORT_MODE"):
+        _build_fields(sample_export_request)
+
+
 # Checks the "happy path" of export_card: a mocked AnkiConnect response with a numeric
 # "result" and no "error" should let export_card return normally, having actually called
 # requests.post exactly once and having called .raise_for_status() on the response.

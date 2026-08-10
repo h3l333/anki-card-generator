@@ -11,6 +11,11 @@ from backend.models import ExportRequest
 ANKICONNECT_URL = os.getenv("ANKICONNECT_URL", "http://localhost:8765")
 DECK_NAME = os.getenv("ANKI_DECK_NAME", "Japanese")
 NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", "Basic")
+EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "basic")
+# "basic" folds all eight fields into Front/Back (Anki's stock "Basic" note type); "full"
+# sends each field individually for a custom note type with matching field names (see
+# README Configuration). Any other value is a config mistake, not a mode to silently
+# fall back from- _build_fields raises on it below.
 # os.getenv("NAME", default) returns the environment variable's value if it's set, or
 # the given default otherwise- so these three constants work out of the box for a
 # fresh install (default Anki deck/note type, default AnkiConnect port) while still
@@ -25,6 +30,31 @@ class AnkiConnectError(Exception):
 
 
 def _build_fields(card: ExportRequest) -> dict:
+    # Anki renders card fields as HTML, not plain text- <b> and <br> below are actual
+    # HTML tags, not a formatting convention specific to this project. That's also why
+    # this function returns a plain dict rather than an ExportRequest: AnkiConnect's
+    # own API expects note fields as a {"FieldName": "HTML string"} mapping, keyed by
+    # the exact field names the target note type defines.
+    if EXPORT_MODE == "full":
+        # One field per note field, for a custom note type whose field names match
+        # these exactly (see README Configuration)- no folding needed since each piece
+        # of data gets its own field instead of being concatenated into Front/Back.
+        return {
+            "Expression": card.expression,
+            "Reading": card.reading,
+            "Definition": card.definition,
+            "Nuance": card.nuance,
+            "Synonyms": card.synonyms,
+            "Antonyms": card.antonyms,
+            "Example": card.example,
+            "Jlpt": card.jlpt,
+        }
+
+    if EXPORT_MODE != "basic":
+        raise ValueError(
+            f"Invalid ANKI_EXPORT_MODE: {EXPORT_MODE!r} (expected 'basic' or 'full')"
+        )
+
     # "Basic" only has Front/Back- fold the eight card fields into those two
     # until a custom Japanese note type exists in Anki (see README Configuration).
     # "Folding" in this context means to combine, flatten or merge multiple pieces of data into fewer containers.
@@ -38,11 +68,6 @@ def _build_fields(card: ExportRequest) -> dict:
         f"<b>Example:</b> {card.example}<br>"
         f"<b>JLPT:</b> {card.jlpt}"
     )
-    # Anki renders card fields as HTML, not plain text- <b> and <br> here are actual
-    # HTML tags, not a formatting convention specific to this project. That's also why
-    # this function returns a plain dict rather than an ExportRequest: AnkiConnect's
-    # own API expects note fields as a {"FieldName": "HTML string"} mapping, keyed by
-    # the exact field names the target note type defines ("Front"/"Back" for "Basic").
     return {"Front": front, "Back": back}
 
 

@@ -95,6 +95,7 @@ class BatchCardResult(BaseModel):
     card: CardDraft | None = None
     error: str | None = None
     word_id: int | None = None
+    duplicate: bool = False
 # One entry per word in a batch request. `card` and `error` are mutually exclusive in
 # practice- backend/llm.py::generate_cards_batch sets exactly one of the two per word
 # (whichever a given word's generate_card() call actually produced), never both and never
@@ -108,6 +109,12 @@ class BatchCardResult(BaseModel):
 # same as the single-word flow's currentWordId, so a batch export can be tracked/updated via
 # backend/db.py's get_latest_export/record_export instead of always falling back to a bare
 # addNote.
+# duplicate mirrors GenerateResponse.duplicate: True means this result's `card` was
+# reassembled straight from an existing Postgres row (backend/main.py's /generate/batch
+# route, via find_word_by_kanji/get_card) rather than a fresh generate_cards_batch() call.
+# Defaults to False so every pre-existing construction site (generate_cards_batch's own
+# BatchCardResult(word=..., card=...) / BatchCardResult(word=..., error=...)) keeps working
+# unchanged.
 
 
 class BatchGenerateResponse(BaseModel):

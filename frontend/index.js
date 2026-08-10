@@ -86,6 +86,14 @@ generateBtn.addEventListener("click", async () => {
 	// user from double-submitting while a request is already in flight, and stops a
 	// stale card from a previous word remaining visible while a new one generates.
 
+	showStatus(
+		"Generating... structured JSON output can take a while (up to a few minutes) - see README Troubleshooting if it seems stuck.",
+		"info",
+	);
+	// Overwritten later by the duplicate-card message (below) or the error message
+	// (catch block) once the response actually comes back- this is just a heads-up for
+	// the wait itself, matching ROADMAP.md's previously-proposed slow-generation warning.
+
 	try {
 		const response = await fetch(`${BACKEND_URL}/generate`, {
 			method: "POST",
@@ -250,6 +258,20 @@ function buildCarouselCard(result) {
 	label.textContent = result.word;
 	card.appendChild(label);
 
+	if (result.duplicate) {
+		const duplicateBanner = document.createElement("div");
+		duplicateBanner.className = "status info";
+		duplicateBanner.textContent =
+			"This word already has a saved card- showing the existing one.";
+		card.appendChild(duplicateBanner);
+	}
+	// Mirrors the single-word flow's showStatus(..., "info") call above for data.duplicate-
+	// reuses the same .status.info CSS class (frontend/index.html) instead of a new one.
+	// A duplicate result still has a populated result.card (backend/main.py's /generate/batch
+	// route reassembles it from Postgres, same as /generate), so the fields/buttons below
+	// build exactly as they would for a freshly generated card- this banner is the only
+	// difference the user sees.
+
 	const cardWordId = result.word_id ?? null;
 	// Mirrors currentWordId in the single-word flow above, just scoped to this one
 	// carousel card via closure instead of a shared module-level variable- each card
@@ -402,6 +424,11 @@ batchGenerateBtn.addEventListener("click", () => {
 	batchGenerateBtn.textContent = "Generating...";
 	// carousel.innerHTML = "" wipes out any cards left over from a previous batch
 	// upload before the new one's results are appended below.
+
+	showBatchStatus(
+		"Generating... structured JSON output can take a while per word (up to a few minutes each) - see README Troubleshooting if it seems stuck.",
+		"info",
+	);
 
 	const reader = new FileReader();
 	// FileReader reads the uploaded file's contents entirely client-side- the raw text

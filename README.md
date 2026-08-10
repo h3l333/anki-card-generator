@@ -39,10 +39,11 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 - `OPENROUTER_MODELS`: comma-separated list of candidate models, tried in order via OpenRouter's built-in model fallback (default: a few free-tier models; see PROMPTS.md).
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
 - `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields. Set up a custom note type matching the eight card fields and point these vars at it for a better fit.
+- `ANKI_EXPORT_MODE`: `basic` (default) folds all eight fields into `Front`/`Back` for Anki's stock `Basic` note type; `full` sends each field individually (`Expression`, `Reading`, `Definition`, `Nuance`, `Synonyms`, `Antonyms`, `Example`, `Jlpt`) for a custom note type with matching field names. Use `full` together with `ANKI_NOTE_TYPE` pointed at that custom note type.
 
 ## Troubleshooting
 
-### Generation seems hung / never comes back
+### Generation seems hung/never comes back
 
 `/generate`'s call to OpenRouter uses a 180s timeout that resets on every byte received (see `PROMPTS.md`), so a slow-but-still-trickling response can look stuck well past what feels reasonable. Isolate whether the delay is this project's code, your network, or the model itself by hitting OpenRouter directly with curl, bypassing the backend entirely:
 

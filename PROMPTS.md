@@ -144,3 +144,24 @@ distinct from Ollama's `format` parameter used previously.
   regenerating the same word via the single-word form has been enough to
   succeed on the next attempt. Not being treated as a bug to fix yet- worth
   keeping in mind, not yet worth a code change.
+- 2026-08-10: `/generate/batch` now runs the same pre-generation
+  duplicate-check `/generate` already did for a single word- it calls
+  `find_word_by_kanji`/`get_card` per word before handing anything to
+  `generate_cards_batch()`, reassembling a hit straight from Postgres
+  (`BatchCardResult.duplicate=True`, `word_id` already set) with no LLM call,
+  while a miss still goes through `generate_cards_batch()` as before.
+  `generate_cards_batch()` itself (`backend/llm.py`) stays unaware of
+  Postgres- the check lives in the route, keeping that layering intact. Two
+  identical words within the same uploaded file are still not deduped
+  against each other, only against what's already in Postgres. Covered by
+  new tests in `tests/test_main.py`; see `ROADMAP.md`.
+- 2026-08-10: added `ANKI_EXPORT_MODE` (`backend/anki.py`). Unlike the entry
+  above, this doesn't touch the prompt or generation call at all- it's
+  recorded here only because it landed in the same batch of uncommitted
+  work. `basic` (default) keeps the existing Front/Back folding for Anki's
+  stock `Basic` note type; `full` sends all eight fields individually
+  (`Expression`/`Reading`/`Definition`/`Nuance`/`Synonyms`/`Antonyms`/`Example`/`Jlpt`)
+  for a custom note type with matching field names. An invalid mode value
+  raises `ValueError` rather than silently falling back to `basic`. Covered
+  by new tests in `tests/test_anki.py`; see README.md Configuration and
+  ARCHITECTURE.md.

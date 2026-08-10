@@ -17,6 +17,7 @@ from backend.db import (
 )
 from backend.llm import LLMError, generate_card, generate_cards_batch
 from backend.models import (
+    BatchCardResult,
     BatchGenerateRequest,
     BatchGenerateResponse,
     CardDraft,
@@ -134,9 +135,45 @@ def generate_batch(request: BatchGenerateRequest):
     except BatchValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    results = generate_cards_batch(words)
+    results: list[BatchCardResult | None] = [None] * len(words)
+    to_generate: list[tuple[int, str]] = []
+    for i, word in enumerate(words):
+        existing_word = find_word_by_kanji(word)
+        if existing_word is None:
+            to_generate.append((i, word))
+            continue
+        existing_card = get_card(existing_word.id)
+        results[i] = BatchCardResult(
+            word=word,
+            word_id=existing_word.id,
+            duplicate=True,
+            card=CardDraft(
+                expression=existing_word.kanji,
+                reading=existing_word.reading,
+                definition_ja=existing_card.definition_ja,
+                nuance=existing_card.nuance,
+                synonyms=existing_card.synonyms,
+                antonyms=existing_card.antonyms,
+                example_sentence=existing_card.example_sentence,
+                jlpt_level=existing_card.jlpt_level,
+            ),
+        )
+    # Same duplicate check /generate does for a single word (see the generate() route
+    # above), just run per word before deciding what to hand to generate_cards_batch().
+    # A hit is reassembled into a BatchCardResult straight from Postgres (duplicate=True,
+    # word_id already set) and placed at its original index- no LLM call for that word. A
+    # miss is queued in to_generate, keeping its original index so it can be spliced back
+    # into `results` in file order once generate_cards_batch() returns.
+
+    generated = generate_cards_batch([word for _, word in to_generate])
+    for (i, _word), result in zip(to_generate, generated):
+        results[i] = result
+    # generate_cards_batch() only ever sees words that weren't already in Postgres- llm.py
+    # stays DB-free (see ROADMAP.md/CLAUDE.md), so the duplicate check above lives entirely
+    # in this route rather than being pushed down into generate_cards_batch() itself.
+
     for result in results:
-        if result.card is None:
+        if result.card is None or result.duplicate:
             continue
         word_id = insert_word(kanji=result.word, reading=result.card.reading, source="batch")
         insert_card(
@@ -149,15 +186,12 @@ def generate_batch(request: BatchGenerateRequest):
             jlpt_level=result.card.jlpt_level,
         )
         result.word_id = word_id
-    # Same insert_word/insert_card persistence /generate does for a single word (see the
-    # generate() route above), just looped per successful batch result. A failed word
-    # (result.card is None, result.error set instead) is skipped entirely- there's no card
-    # content to persist for it. No pre-generation duplicate check here, unlike /generate-
-    # this deliberately doesn't touch find_word_by_kanji/get_card, so a word already in
-    # Postgres still goes through generate_cards_batch() and gets a fresh LLM call and a
-    # fresh words/cards row (see ROADMAP.md: batch duplicate-checking is a separate, bigger
-    # UX decision, not assumed here). This loop only closes the export-tracking gap- giving
-    # each successful result a word_id so /export can find it via get_latest_export/
+    # Same insert_word/insert_card persistence /generate does for a single word. A failed
+    # word (result.card is None, result.error set instead) is skipped entirely- there's no
+    # card content to persist for it. A duplicate word is also skipped here- its row already
+    # exists (that's the whole point of the check above), so re-inserting it would create a
+    # second words/cards row for the same kanji. This loop only persists genuinely new
+    # results, giving each one a word_id so /export can find it via get_latest_export/
     # record_export instead of always falling back to a bare addNote.
 
     return BatchGenerateResponse(results=results)

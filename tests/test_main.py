@@ -92,6 +92,7 @@ def test_generate_batch_route_returns_results(client, sample_card_json):
     results = [BatchCardResult(word="大人", card=card)]
     with (
         patch("backend.main.parse_and_validate", return_value=["大人"]),
+        patch("backend.main.find_word_by_kanji", return_value=None),
         patch("backend.main.generate_cards_batch", return_value=results),
         patch("backend.main.insert_word", return_value=9) as mock_insert_word,
         patch("backend.main.insert_card") as mock_insert_card,
@@ -110,12 +111,68 @@ def test_generate_batch_route_returns_results(client, sample_card_json):
     # does for /generate), and the response's word_id is asserted directly- that's the
     # field the frontend now needs from a batch result to track/update a later export
     # (see backend/models.py's BatchCardResult and frontend/index.js's buildCarouselCard).
+    # find_word_by_kanji is mocked to return None (no existing record) since the route now
+    # calls it per word before deciding what to generate- same reasoning as /generate's own
+    # tests- otherwise this test would hit a real, unmocked Postgres lookup.
+
+
+def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    existing_word = SimpleNamespace(id=7, kanji="大人", reading=sample_card_json["reading"])
+    existing_card = SimpleNamespace(
+        definition_ja=sample_card_json["definition_ja"],
+        nuance=sample_card_json["nuance"],
+        synonyms=sample_card_json["synonyms"],
+        antonyms=sample_card_json["antonyms"],
+        example_sentence=sample_card_json["example_sentence"],
+        jlpt_level=sample_card_json["jlpt_level"],
+    )
+    new_word_result = BatchCardResult(word="新語", card=card)
+
+    def fake_find_word_by_kanji(word):
+        return existing_word if word == "大人" else None
+
+    with (
+        patch("backend.main.parse_and_validate", return_value=["大人", "新語"]),
+        patch("backend.main.find_word_by_kanji", side_effect=fake_find_word_by_kanji),
+        patch("backend.main.get_card", return_value=existing_card),
+        patch(
+            "backend.main.generate_cards_batch", return_value=[new_word_result]
+        ) as mock_generate_cards_batch,
+        patch("backend.main.insert_word", return_value=9) as mock_insert_word,
+        patch("backend.main.insert_card") as mock_insert_card,
+    ):
+        response = client.post("/generate/batch", json={"file_content": "大人\n新語"})
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [r["word"] for r in results] == ["大人", "新語"]
+
+    duplicate_result, generated_result = results
+    assert duplicate_result["duplicate"] is True
+    assert duplicate_result["word_id"] == 7
+    assert duplicate_result["card"]["expression"] == "大人"
+    assert generated_result["duplicate"] is False
+    assert generated_result["word_id"] == 9
+
+    mock_generate_cards_batch.assert_called_once_with(["新語"])
+    mock_insert_word.assert_called_once_with(kanji="新語", reading=card.reading, source="batch")
+    mock_insert_card.assert_called_once()
+    # Mirrors test_generate_route_returns_existing_card_without_calling_llm above, but for a
+    # mixed batch: "大人" is already in Postgres (find_word_by_kanji hits), "新語" isn't. The
+    # duplicate result must come back with duplicate=True, its existing word_id, and a card
+    # rebuilt from Postgres- and generate_cards_batch must only ever be called with the
+    # words that actually need generating (asserted via call args, not just call count), so a
+    # duplicate word never reaches an LLM call. insert_word/insert_card must fire once, only
+    # for the genuinely new word- re-inserting the duplicate would create a second row for
+    # the same kanji. Response order ("大人" then "新語") must match the uploaded file's
+    # order even though the duplicate was resolved without ever touching generate_cards_batch.
 
 
 def test_generate_batch_route_skips_persistence_for_failed_words(client):
     results = [BatchCardResult(word="大人", error="boom")]
     with (
         patch("backend.main.parse_and_validate", return_value=["大人"]),
+        patch("backend.main.find_word_by_kanji", return_value=None),
         patch("backend.main.generate_cards_batch", return_value=results),
         patch("backend.main.insert_word") as mock_insert_word,
         patch("backend.main.insert_card") as mock_insert_card,
@@ -127,7 +184,9 @@ def test_generate_batch_route_skips_persistence_for_failed_words(client):
     mock_insert_card.assert_not_called()
     # A result with no card (generate_card failed for this word- see BatchCardResult) has
     # nothing to persist, so the route's persistence loop must skip it entirely rather than
-    # calling insert_word/insert_card with a None card's attributes.
+    # calling insert_word/insert_card with a None card's attributes. find_word_by_kanji is
+    # mocked to return None so the route's per-word duplicate check reaches
+    # generate_cards_batch for this word instead of hitting a real Postgres lookup.
 
 
 def test_generate_batch_route_maps_validation_error_to_400(client):
