@@ -20,7 +20,7 @@ Generate Japanese Anki flashcards using the OpenRouter API (free-tier LLM access
 1. Start the database container: `docker compose up -d`.
 2. Start the backend: `uvicorn backend.main:app --reload --port 5000 --env-file .env` (from the project root). `--env-file` is required for uvicorn to actually pick up keys from `.env`; without it, `.env` values are never loaded and `/generate` will fail with "OPENROUTER_API_KEY is not set".
 3. Serve the frontend (see "Running the Frontend" below) and open it in a browser.
-4. Enter a word, click Generate, review/edit the fields, then click Export to Anki (requires Anki running locally with the AnkiConnect add-on).
+4. Pick a JLPT level from the dropdown (defaults to N3- shapes how the generated definition/nuance/example sentence are worded, not which words can be looked up), enter a word, click Generate, review/edit the fields, then click Export to Anki (requires Anki running locally with the AnkiConnect add-on).
 
 For multiple words at once, use the Batch Upload section: a `.txt` file with one word per line (kanji/kana only, max 12 words), e.g.:
 
@@ -37,6 +37,7 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 
 - `OPENROUTER_API_KEY`: authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
 - `OPENROUTER_MODELS`: comma-separated list of candidate models, tried in order via OpenRouter's built-in model fallback (default: a few free-tier models; see PROMPTS.md).
+- `JLPT_LEVEL_DEFAULT`: fallback JLPT level (`N5`-`N1`, default `N3`) used to cater generated definitions/nuance/example sentences to a learner's proficiency, when a request doesn't specify one. The frontend's "JLPT level" dropdown sends its own value on every request, so this only matters if that request field is omitted (see PROMPTS.md). Not to be confused with the per-card `jlpt_level` field, which is the model's own estimate of the target word's difficulty.
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
 - `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Japanese Note Type` in `full` mode, `Basic` in `basic` mode- see `ANKI_EXPORT_MODE` below).
 - `ANKI_EXPORT_MODE`: `full` (default) sends each field individually (`Expression`, `Reading`, `Definition`, `Nuance`, `Synonyms`, `Antonyms`, `Example`, `Jlpt`) to a custom note type. `ANKI_NOTE_TYPE` defaults to `Japanese Note Type` in this mode- if that note type doesn't already exist in Anki, the first `full`-mode export creates it automatically via AnkiConnect's `createModel` action, with those eight fields and a basic front/back template, so this works with zero manual Anki setup. An existing note type with that name is left untouched (`createModel` is only ever called to create, never to update). `basic` folds all eight fields into `Front`/`Back` instead, for Anki's stock `Basic` note type- a zero-config fallback with only two fields. Set `ANKI_NOTE_TYPE` yourself to use a different note type name in either mode.

@@ -16,6 +16,9 @@ const exportBtn = document.getElementById("exportBtn");
 const rejectBtn = document.getElementById("rejectBtn");
 const accentPicker = document.getElementById("accentPicker");
 const fontPicker = document.getElementById("fontPicker");
+const levelPicker = document.getElementById("levelPicker");
+// Shared by both the single-word and batch flows below- one page-level setting, not a
+// per-flow one, so switching it applies to whichever generation the user triggers next.
 
 // `fields` maps this project's ExportRequest field names (backend/models.py) to the
 // actual <input>/<textarea> elements in index.html's card form. Note the keys here-
@@ -208,10 +211,10 @@ generateBtn.addEventListener("click", async () => {
 		const response = await fetch(`${BACKEND_URL}/generate`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ word }),
+			body: JSON.stringify({ word, level: levelPicker.value }),
 		});
-		// `{ word }` is object shorthand for `{ word: word }`- this matches
-		// GenerateRequest's shape in backend/models.py exactly (a single "word" field).
+		// Matches GenerateRequest's shape in backend/models.py: `word` plus which JLPT
+		// level to cater the generated Japanese to.
 
 		if (!response.ok) {
 			throw new Error("bad-response");
@@ -553,7 +556,7 @@ batchGenerateBtn.addEventListener("click", () => {
 			const response = await fetch(`${BACKEND_URL}/generate/batch`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ file_content: reader.result }),
+				body: JSON.stringify({ file_content: reader.result, level: levelPicker.value }),
 			});
 
 			if (!response.ok) {

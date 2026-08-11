@@ -34,19 +34,21 @@ sentence, JLPT estimate) are requested in a single call; see `backend/llm.py`.
 
 ```text
 対象語: 「{word}」
+想定読者のレベル: JLPT {level}
 
-あなたは日本語学習者(中級〜上級)向けの辞書カードを作成します。
+あなたは日本語学習者向けの辞書カードを作成します。
 必ず「{word}」についてのみ回答してください。他の単語やより一般的な例に置き換えないでください。
+definition_ja、nuance、example_sentenceは、JLPT {level}の学習者が理解できる語彙と文法だけを使って書いてください。
 
 次の情報をJSON形式で生成してください:
 - expression: 「{word}」の表記(漢字・かな)
 - reading: 「{word}」のひらがなでの読み方
-- definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)
-- nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明
+- definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)。JLPT {level}レベル向け。
+- nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明。JLPT {level}レベル向け。
 - synonyms: 「{word}」の類義語(似た意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
 - antonyms: 「{word}」の対義語(反対の意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
-- example_sentence: 「{word}」を使った自然な例文。ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
-- jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)
+- example_sentence: 「{word}」を使った自然な例文。JLPT {level}レベルの学習者向けに、ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
+- jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)。これは対象語自体の難易度であり、上記の想定読者レベルとは別物です。
 
 繰り返しますが、対象語は「{word}」です。
 ```
@@ -54,6 +56,14 @@ sentence, JLPT estimate) are requested in a single call; see `backend/llm.py`.
 The target word is anchored at the start, middle, and end of the prompt.
 This was added to fight topic drift observed with the previous local model
 and is worth keeping regardless of provider.
+
+`{level}` is the requester's own JLPT level (`GenerateRequest.level` /
+`BatchGenerateRequest.level`, falling back to `JLPT_LEVEL_DEFAULT` if unset- see
+`backend/llm.py`), used to cater `definition_ja`/`nuance`/`example_sentence`'s
+Japanese to that audience. It's distinct from `jlpt_level` in the schema below,
+which is the model's own estimate of the target *word's* difficulty and isn't
+influenced by `{level}` (the prompt says so explicitly, to stop the model
+conflating the two).
 
 **Output schema:** `backend/models.py::CardDraft`
 
@@ -194,6 +204,23 @@ distinct from Ollama's `format` parameter used previously.
   Tests in `tests/test_anki.py` that specifically exercise `basic`-mode
   behavior now set `EXPORT_MODE` explicitly rather than relying on the
   default. See README.md Configuration.
+- 2026-08-11: added a user-facing target JLPT level (`GenerateRequest.level` /
+  `BatchGenerateRequest.level`, `backend/models.py`), sent by a new dropdown in
+  `frontend/index.html` on every `/generate` and `/generate/batch` request and
+  falling back to a new `JLPT_LEVEL_DEFAULT` env var (`backend/llm.py`, default
+  `N3`) when unset. `_PROMPT_TEMPLATE` gained a `{level}` slot instructing
+  `definition_ja`/`nuance`/`example_sentence` to use only vocabulary and
+  grammar a learner at that level would understand- word difficulty itself
+  isn't gated; any word is still generated regardless of level, only the
+  explanation text's complexity changes. Kept explicitly distinct from the
+  schema's own `jlpt_level` field (the model's estimate of the target word's
+  difficulty)- the prompt says so directly, since the two are easy to conflate.
+  `backend/db.py`'s `Word` gained a matching `level` column, folded into
+  `find_word_by_kanji`'s lookup key (`DATABASE.md`) so the same word
+  regenerated at a different level is treated as a new word rather than
+  returning a card written for a different audience from cache. `full`/`basic`
+  export modes are unaffected- `level` never reaches `ExportRequest`. Covered
+  by new tests in `tests/test_llm.py` and `tests/test_main.py`.
 - 2026-08-11: `POST /generate/batch` now streams results instead of
   returning one JSON document once the whole batch finishes
   (`backend/main.py::_stream_batch_results`, `backend/llm.py::generate_cards_batch`

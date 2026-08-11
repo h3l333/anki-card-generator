@@ -20,6 +20,11 @@ batch case. A hit returns the existing card straight from Postgres (`duplicate=T
 reusing the existing `word_id`) instead of spending a fresh LLM call; only genuinely
 new words get a fresh `words`/`cards` row (see `ARCHITECTURE.md`).
 
+`find_word_by_kanji` matches on kanji **and** `words.level` together- the same word
+requested at a different JLPT level is treated as a new word, since its card's language
+would need regenerating for the new audience. See `PROMPTS.md` for how `level` shapes
+the generation prompt.
+
 ## Storage choice
 
 Postgres, running in its own Docker container (see `docker-compose.yml`, service
@@ -41,6 +46,7 @@ local, uncommitted `.env` file if that matters to you).
 | id         | SERIAL PK |                                     |
 | kanji      | TEXT      |                                     |
 | reading    | TEXT      |                                     |
+| level      | TEXT      | JLPT level (N5-N1) the card's language was generated for; part of the duplicate-check lookup, so the same kanji at a different level is a separate row |
 | source     | TEXT      | `manual` (single-word flow) or `batch` (batch flow)- no filename is captured |
 | created_at | TIMESTAMP |                                     |
 

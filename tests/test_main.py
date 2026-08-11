@@ -4,7 +4,7 @@ from unittest.mock import ANY, patch
 
 from backend.anki import AnkiConnectError
 from backend.batch import BatchValidationError
-from backend.llm import LLMError
+from backend.llm import JLPT_LEVEL_DEFAULT, LLMError
 from backend.models import BatchCardResult, CardDraft
 
 # test_main.py doesn't re-test the LLM or Anki logic itself (that's already covered by
@@ -100,6 +100,41 @@ def test_generate_route_maps_llm_error_to_502(client):
     # in the first place, same reasoning as test_generate_route_returns_card above.
 
 
+def test_generate_route_uses_requested_level(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None) as mock_find,
+        patch("backend.main.generate_card", return_value=card) as mock_generate_card,
+        patch("backend.main.insert_word", return_value=1) as mock_insert_word,
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post("/generate", json={"word": "大人", "level": "N1"})
+    assert response.status_code == 200
+    mock_find.assert_called_once_with("大人", level="N1")
+    mock_generate_card.assert_called_once_with("大人", level="N1")
+    mock_insert_word.assert_called_once_with(
+        kanji="大人", reading=card.reading, source="manual", level="N1"
+    )
+    # Confirms the requested level threads through every step- duplicate check, the LLM
+    # call, and persistence- rather than only reaching one of them.
+
+
+def test_generate_route_falls_back_to_default_level(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None) as mock_find,
+        patch("backend.main.generate_card", return_value=card) as mock_generate_card,
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post("/generate", json={"word": "大人"})
+    assert response.status_code == 200
+    mock_find.assert_called_once_with("大人", level=JLPT_LEVEL_DEFAULT)
+    mock_generate_card.assert_called_once_with("大人", level=JLPT_LEVEL_DEFAULT)
+    # GenerateRequest.level is optional (backend/models.py)- omitting it entirely should
+    # fall back to backend/llm.py's JLPT_LEVEL_DEFAULT, same as an unset OPENROUTER_MODELS.
+
+
 def test_generate_batch_route_returns_results(client, sample_card_json):
     card = CardDraft(**sample_card_json)
     results = [BatchCardResult(word="大人", card=card)]
@@ -117,7 +152,9 @@ def test_generate_batch_route_returns_results(client, sample_card_json):
     body = results[0]
     assert body["word"] == "大人"
     assert body["word_id"] == 9
-    mock_insert_word.assert_called_once_with(kanji="大人", reading=card.reading, source="batch")
+    mock_insert_word.assert_called_once_with(
+        kanji="大人", reading=card.reading, source="batch", level=JLPT_LEVEL_DEFAULT
+    )
     mock_insert_card.assert_called_once()
     # /generate/batch calls parse_and_validate then generate_cards_batch, same as before-
     # both still need mocking here since this test is only about the route's wiring, not
@@ -144,7 +181,7 @@ def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_j
     )
     new_word_result = BatchCardResult(word="新語", card=card)
 
-    def fake_find_word_by_kanji(word):
+    def fake_find_word_by_kanji(word, level=None):
         return existing_word if word == "大人" else None
 
     with (
@@ -170,8 +207,10 @@ def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_j
     assert generated_result["duplicate"] is False
     assert generated_result["word_id"] == 9
 
-    mock_generate_cards_batch.assert_called_once_with(["新語"])
-    mock_insert_word.assert_called_once_with(kanji="新語", reading=card.reading, source="batch")
+    mock_generate_cards_batch.assert_called_once_with(["新語"], level=JLPT_LEVEL_DEFAULT)
+    mock_insert_word.assert_called_once_with(
+        kanji="新語", reading=card.reading, source="batch", level=JLPT_LEVEL_DEFAULT
+    )
     mock_insert_card.assert_called_once()
     # Mirrors test_generate_route_returns_existing_card_without_calling_llm above, but for a
     # mixed batch: "大人" is already in Postgres (find_word_by_kanji hits), "新語" isn't. The
@@ -207,7 +246,7 @@ def test_generate_batch_route_streams_progress_counts(client, sample_card_json):
         BatchCardResult(word="失敗語", error="boom"),
     ]
 
-    def fake_find_word_by_kanji(word):
+    def fake_find_word_by_kanji(word, level=None):
         return existing_word if word == "大人" else None
 
     with (

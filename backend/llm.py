@@ -38,21 +38,31 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # request body below (a "messages" list with role/content) looks like a typical chat
 # API call rather than anything custom to OpenRouter.
 
+JLPT_LEVEL_DEFAULT = os.getenv("JLPT_LEVEL_DEFAULT", "N3")
+# Target-audience level: what learner level definition_ja/nuance/example_sentence
+# should be written for, distinct from CardDraft.jlpt_level (the model's own estimate
+# of the target *word's* difficulty). Same env-var-with-default pattern as MODEL_NAMES
+# above; the frontend's level dropdown sends its own value on every request, so this
+# only matters when the frontend doesn't (GenerateRequest.level/BatchGenerateRequest.level
+# left unset).
+
 _PROMPT_TEMPLATE = """\
 対象語: 「{word}」
+想定読者のレベル: JLPT {level}
 
-あなたは日本語学習者(中級〜上級)向けの辞書カードを作成します。
+あなたは日本語学習者向けの辞書カードを作成します。
 必ず「{word}」についてのみ回答してください。他の単語やより一般的な例に置き換えないでください。
+definition_ja、nuance、example_sentenceは、JLPT {level}の学習者が理解できる語彙と文法だけを使って書いてください。
 
 次の情報をJSON形式で生成してください:
 - expression: 「{word}」の表記(漢字・かな)
 - reading: 「{word}」のひらがなでの読み方
-- definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)
-- nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明
+- definition_ja: 「{word}」の日本語のみによる定義(モノリンガル)。JLPT {level}レベル向け。
+- nuance: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなどの説明。JLPT {level}レベル向け。
 - synonyms: 「{word}」の類義語(似た意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
 - antonyms: 「{word}」の対義語(反対の意味を持つ語)。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
-- example_sentence: 「{word}」を使った自然な例文。ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
-- jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)
+- example_sentence: 「{word}」を使った自然な例文。JLPT {level}レベルの学習者向けに、ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
+- jlpt_level: 「{word}」の推定されるJLPTレベル(N5〜N1のいずれか)。これは対象語自体の難易度であり、上記の想定読者レベルとは別物です。
 
 繰り返しますが、対象語は「{word}」です。
 """
@@ -69,7 +79,7 @@ class LLMError(Exception):
     """Raised when the LLM API is unreachable, misconfigured, or returns a response that doesn't match the schema."""
     # Triple quotes in Python allow for the creation of multi-line strings and docstrings.
 
-def generate_card(word: str) -> CardDraft:
+def generate_card(word: str, level: str = JLPT_LEVEL_DEFAULT) -> CardDraft:
     if not API_KEY:
         raise LLMError("OPENROUTER_API_KEY is not set- see README.md Configuration.")
     # Checked first and separately from the try/except below- a missing key is a
@@ -94,7 +104,10 @@ def generate_card(word: str) -> CardDraft:
                 json={
                     "models": MODEL_NAMES,
                     "messages": [
-                        {"role": "user", "content": _PROMPT_TEMPLATE.format(word=word)}
+                        {
+                            "role": "user",
+                            "content": _PROMPT_TEMPLATE.format(word=word, level=level),
+                        }
                     ],
                     "response_format": {
                         "type": "json_schema",
@@ -168,10 +181,12 @@ def generate_card(word: str) -> CardDraft:
     # doesn't scope loop-body variables to the loop itself.
 
 
-def generate_cards_batch(words: list[str]) -> Iterator[BatchCardResult]:
+def generate_cards_batch(
+    words: list[str], level: str = JLPT_LEVEL_DEFAULT
+) -> Iterator[BatchCardResult]:
     for word in words:
         try:
-            yield BatchCardResult(word=word, card=generate_card(word))
+            yield BatchCardResult(word=word, card=generate_card(word, level=level))
         except LLMError as exc:
             yield BatchCardResult(word=word, error=str(exc))
     # A generator rather than building and returning a list- backend/main.py's

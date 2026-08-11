@@ -22,7 +22,7 @@ from backend.db import (
     insert_word,
     record_export,
 )
-from backend.llm import LLMError, generate_card, generate_cards_batch
+from backend.llm import JLPT_LEVEL_DEFAULT, LLMError, generate_card, generate_cards_batch
 from backend.models import (
     BatchCardResult,
     BatchGenerateRequest,
@@ -78,7 +78,8 @@ app.add_middleware(
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(request: GenerateRequest):
-    existing_word = find_word_by_kanji(request.word)
+    level = request.level or JLPT_LEVEL_DEFAULT
+    existing_word = find_word_by_kanji(request.word, level=level)
     if existing_word is not None:
         existing_card = get_card(existing_word.id)
         return GenerateResponse(
@@ -102,11 +103,13 @@ def generate(request: GenerateRequest):
     # know which branch produced it.
 
     try:
-        card = generate_card(request.word)
+        card = generate_card(request.word, level=level)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    word_id = insert_word(kanji=request.word, reading=card.reading, source="manual")
+    word_id = insert_word(
+        kanji=request.word, reading=card.reading, source="manual", level=level
+    )
     insert_card(
         word_id=word_id,
         definition_ja=card.definition_ja,
@@ -134,7 +137,7 @@ def generate(request: GenerateRequest):
 # this try block at all, since it never calls OpenRouter in the first place.
 
 
-def _stream_batch_results(words: list[str]) -> Iterator[str]:
+def _stream_batch_results(words: list[str], level: str) -> Iterator[str]:
     # One NDJSON line per yield- frontend/index.js reads this response body
     # incrementally (not as one parsed JSON document) so it can update a "3/12 done"
     # progress counter and render each carousel card as its result arrives, instead of
@@ -149,7 +152,7 @@ def _stream_batch_results(words: list[str]) -> Iterator[str]:
     results: list[BatchCardResult | None] = [None] * total
     to_generate: list[tuple[int, str]] = []
     for i, word in enumerate(words):
-        existing_word = find_word_by_kanji(word)
+        existing_word = find_word_by_kanji(word, level=level)
         if existing_word is None:
             to_generate.append((i, word))
             continue
@@ -177,7 +180,9 @@ def _stream_batch_results(words: list[str]) -> Iterator[str]:
     # miss is queued in to_generate, keeping its original index so results[i] still ends
     # up correct once the loop below fills it in from generate_cards_batch().
 
-    generated = iter(generate_cards_batch([word for _, word in to_generate]))
+    generated = iter(
+        generate_cards_batch([word for _, word in to_generate], level=level)
+    )
     # iter() is a no-op on the real generate_cards_batch() (already a generator, hence
     # already an iterator)- it's here so tests/test_main.py can keep mocking this call
     # with return_value=<a plain list>, same as before this route streamed anything, and
@@ -195,7 +200,10 @@ def _stream_batch_results(words: list[str]) -> Iterator[str]:
             result = next(generated)
             if result.card is not None:
                 word_id = insert_word(
-                    kanji=result.word, reading=result.card.reading, source="batch"
+                    kanji=result.word,
+                    reading=result.card.reading,
+                    source="batch",
+                    level=level,
                 )
                 insert_card(
                     word_id=word_id,
@@ -235,7 +243,10 @@ def generate_batch(request: BatchGenerateRequest):
     # still gets a normal HTTPException/JSON 400 response- once StreamingResponse below
     # starts sending bytes, the status code is already committed to 200 and can't change.
 
-    return StreamingResponse(_stream_batch_results(words), media_type="application/x-ndjson")
+    level = request.level or JLPT_LEVEL_DEFAULT
+    return StreamingResponse(
+        _stream_batch_results(words, level), media_type="application/x-ndjson"
+    )
 # No response_model here (unlike the plain /generate route above)- the body is a stream
 # of newline-delimited JSON objects, not one document matching a single Pydantic model,
 # so response_model has nothing to validate against. 400 ("Bad Request") on the

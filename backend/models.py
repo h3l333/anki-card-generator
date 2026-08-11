@@ -8,8 +8,13 @@ from pydantic import BaseModel, Field
 
 class GenerateRequest(BaseModel):
     word: str
-# The request body shape for POST /generate (backend/main.py)- just the single word the user
-# typed into the frontend's word input box.
+    level: str | None = None
+# The request body shape for POST /generate (backend/main.py)- the word the user typed into
+# the frontend's word input box, plus which JLPT level to cater definition_ja/nuance/
+# example_sentence's language to. `level` is optional- an unset value falls back to
+# backend/llm.py's JLPT_LEVEL_DEFAULT in the route (see backend/main.py's generate()), same
+# pattern as OPENROUTER_MODELS' env-var-with-default. Not to be confused with CardDraft.
+# jlpt_level below, which is the model's own estimate of the target *word's* difficulty.
 
 
 class CardDraft(BaseModel):
@@ -85,9 +90,12 @@ class ExportRequest(BaseModel):
 
 class BatchGenerateRequest(BaseModel):
     file_content: str
+    level: str | None = None
 # The request body shape for POST /generate/batch- the raw text contents of the uploaded
 # .txt file, read client-side via FileReader in frontend/index.js and sent as a plain string
 # rather than a file upload, so backend/batch.py never has to deal with multipart form data.
+# `level` applies to every word in the batch (there's no per-line level in the .txt format)-
+# same optional/default-fallback behavior as GenerateRequest.level above.
 
 
 class BatchCardResult(BaseModel):

@@ -84,6 +84,14 @@ class Word(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     kanji: Mapped[str] = mapped_column(String)
     reading: Mapped[str] = mapped_column(String)
+    level: Mapped[str] = mapped_column(String)
+    # Which JLPT level the card's language (definition_ja/nuance/example_sentence) was
+    # generated for- part of find_word_by_kanji's lookup key below, so the same kanji
+    # regenerated at a different level is a distinct Word row rather than reusing a card
+    # written for a different audience. If a `words` table already exists from before this
+    # column was added, create_all() (see init_db() below) won't retrofit it- needs either
+    # `ALTER TABLE words ADD COLUMN level TEXT NOT NULL DEFAULT 'N3';` run by hand, or
+    # dropping/recreating the table, since there's no migration tool yet (see ROADMAP.md).
     source: Mapped[str] = mapped_column(String)
     created_at: Mapped[object] = mapped_column(TIMESTAMP, server_default=func.now())
     # Matches DATABASE.md's `words` table one column at a time. server_default=func.now()
@@ -175,9 +183,9 @@ def init_db() -> None:
 # something else (a startup hook, most likely) needs to call init_db() once, later.
 
 
-def insert_word(kanji: str, reading: str, source: str) -> int:
+def insert_word(kanji: str, reading: str, source: str, level: str) -> int:
     with SessionLocal() as session:
-        word = Word(kanji=kanji, reading=reading, source=source)
+        word = Word(kanji=kanji, reading=reading, source=source, level=level)
         session.add(word)
         session.commit()
         session.refresh(word)
@@ -217,15 +225,18 @@ def insert_card(
 # fields off its own CardDraft instance first.
 
 
-def find_word_by_kanji(kanji: str) -> Word | None:
+def find_word_by_kanji(kanji: str, level: str) -> Word | None:
     with SessionLocal() as session:
-        return session.scalar(select(Word).where(Word.kanji == kanji))
+        return session.scalar(
+            select(Word).where(Word.kanji == kanji, Word.level == level)
+        )
 # The pre-generation duplicate check- called before spending any LLM tokens, so a word
-# that's already been generated once can short-circuit straight to the existing Card
-# instead of calling OpenRouter again. session.scalar(select(...)) returns the first
-# matching row or None, which is exactly the "does this exist yet" shape callers need.
-# Matches on exact kanji text- no fuzzy/normalized matching, so e.g. full-width vs
-# half-width variants of the same word would be treated as different words.
+# that's already been generated once *at this level* can short-circuit straight to the
+# existing Card instead of calling OpenRouter again. session.scalar(select(...)) returns
+# the first matching row or None, which is exactly the "does this exist yet" shape callers
+# need. Matches on exact kanji text plus level- no fuzzy/normalized kanji matching (e.g.
+# full-width vs half-width variants are different words), and a word already generated at
+# one level is still treated as new the first time it's requested at a different level.
 # Note the returned Word is detached once this function's `with` block exits- reading
 # plain columns off it (word.id, word.kanji, ...) afterwards is fine, but touching a
 # relationship (word.cards, word.exports) would raise, since lazy-loading a relationship

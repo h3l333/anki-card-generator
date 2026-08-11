@@ -88,8 +88,33 @@ def test_generate_card_wraps_request_errors(patch_api_key):
     # LLMError with a clearer, word-specific message.
 
 
+def test_generate_card_uses_level_in_prompt(patch_api_key, sample_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_card_json)
+    ) as mock_post:
+        generate_card("大人", level="N1")
+    sent_prompt = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "N1" in sent_prompt
+    # Confirms `level` actually reaches the prompt sent to OpenRouter, not just that
+    # generate_card() accepts the parameter- the prompt template's {level} slot
+    # (backend/llm.py::_PROMPT_TEMPLATE) is what backend/main.py relies on to cater
+    # definition_ja/nuance/example_sentence to the requester's chosen JLPT level.
+
+
+def test_generate_card_defaults_level_when_unspecified(patch_api_key, sample_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_card_json)
+    ) as mock_post:
+        generate_card("大人")
+    sent_prompt = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert llm.JLPT_LEVEL_DEFAULT in sent_prompt
+    # No level passed- generate_card()'s own default parameter (JLPT_LEVEL_DEFAULT) should
+    # be what lands in the prompt, same fallback backend/main.py relies on when a request
+    # omits GenerateRequest.level/BatchGenerateRequest.level.
+
+
 def test_generate_cards_batch_continues_after_one_failure(sample_card_json):
-    def fake_generate_card(word):
+    def fake_generate_card(word, level=None):
         if word == "犬":
             raise LLMError("boom")
         return CardDraft(**{**sample_card_json, "expression": word})
