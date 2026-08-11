@@ -1,10 +1,10 @@
 black==26.5.1
 pydantic==2.13.4
 pydantic_core==2.46.4
-fastapi
-uvicorn[standard]
-requests
-pytest
-httpx
-sqlalchemy
-psycopg[binary]
+fastapi==0.140.0
+uvicorn[standard]==0.51.0
+requests==2.34.2
+pytest==9.1.1
+httpx==0.28.1
+sqlalchemy==2.0.51
+psycopg[binary]==3.3.4
