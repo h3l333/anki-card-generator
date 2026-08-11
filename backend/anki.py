@@ -10,16 +10,29 @@ from backend.models import ExportRequest
 
 ANKICONNECT_URL = os.getenv("ANKICONNECT_URL", "http://localhost:8765")
 DECK_NAME = os.getenv("ANKI_DECK_NAME", "Japanese")
-NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", "Basic")
-EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "basic")
-# "basic" folds all eight fields into Front/Back (Anki's stock "Basic" note type); "full"
-# sends each field individually for a custom note type with matching field names (see
-# README Configuration). Any other value is a config mistake, not a mode to silently
-# fall back from- _build_fields raises on it below.
+EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "full")
+# "full" (default) sends each field individually for a custom note type with matching
+# field names, auto-created via createModel if missing (see _ensure_full_mode_note_type
+# below)- zero setup burden now that that auto-create exists, and it's the richer export
+# (all eight fields land in Anki, not just two). "basic" folds all eight fields into
+# Front/Back instead, for Anki's stock "Basic" note type (see README Configuration). Any
+# other value is a config mistake, not a mode to silently fall back from- _build_fields
+# raises on it below.
+
+def _default_note_type(export_mode: str) -> str:
+    # Only ANKI_NOTE_TYPE itself overrides the result of this- the default depends on
+    # export_mode so "full" mode works with zero note-type config too: "Japanese Note
+    # Type" doesn't collide with Anki's stock "Basic", so _ensure_full_mode_note_type
+    # (below) auto-creates it via createModel on first export instead of the user having
+    # to pick and set a name first.
+    return "Japanese Note Type" if export_mode == "full" else "Basic"
+
+
+NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", _default_note_type(EXPORT_MODE))
 # os.getenv("NAME", default) returns the environment variable's value if it's set, or
-# the given default otherwise- so these three constants work out of the box for a
-# fresh install (default Anki deck/note type, default AnkiConnect port) while still
-# being overridable per-user without any code change.
+# the given default otherwise- so these constants work out of the box for a fresh install
+# (default Anki deck/note type, default AnkiConnect port) while still being overridable
+# per-user without any code change.
 
 
 class AnkiConnectError(Exception):
@@ -27,6 +40,68 @@ class AnkiConnectError(Exception):
     # backend/main.py's /export route catches this specifically and turns it into an
     # HTTP 503 response- see the two distinct raise sites in export_card() below for
     # the two different situations this same exception type covers.
+
+
+FULL_MODE_FIELDS = [
+    "Expression", "Reading", "Definition", "Nuance",
+    "Synonyms", "Antonyms", "Example", "Jlpt",
+]
+# Same field names _build_fields uses for "full" mode below- pulled out to a module-level
+# constant so _ensure_full_mode_note_type can pass them to AnkiConnect's createModel
+# without repeating the list a second time.
+
+
+def _post_to_ankiconnect(action: str, params: dict) -> dict:
+    # Every AnkiConnect call in this module (modelNames, createModel, addNote,
+    # updateNoteFields) shares the same request envelope, transport-error handling, and
+    # logical-error handling- centralized here instead of repeated at each call site.
+    try:
+        response = requests.post(
+            ANKICONNECT_URL,
+            json={"action": action, "version": 6, "params": params},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise AnkiConnectError(
+            f"Could not reach AnkiConnect at {ANKICONNECT_URL}: {exc}"
+        ) from exc
+
+    data = response.json()
+    if data.get("error"):
+        raise AnkiConnectError(data["error"])
+    return data
+
+
+def _ensure_full_mode_note_type() -> None:
+    # "full" mode targets a custom note type (ANKI_NOTE_TYPE) that AnkiConnect's
+    # addNote/updateNoteFields will happily fail on with a not-very-actionable error if it
+    # doesn't exist yet, or doesn't have the fields _build_fields tries to fill. Creating it
+    # up front via AnkiConnect's own createModel action lets "full" mode work against a
+    # stock Anki profile without the user having to hand-build the note type first.
+    data = _post_to_ankiconnect("modelNames", {})
+    if NOTE_TYPE in data["result"]:
+        # Already exists- leave it alone. createModel has no "update" mode, and this
+        # should never silently overwrite a note type the user may have customized
+        # (templates, styling, extra fields beyond the eight expected here).
+        return
+
+    back_fields = "<br>".join(f"{{{{{field}}}}}" for field in FULL_MODE_FIELDS[1:])
+    _post_to_ankiconnect(
+        "createModel",
+        {
+            "modelName": NOTE_TYPE,
+            "inOrderFields": FULL_MODE_FIELDS,
+            "css": ".card { font-family: sans-serif; font-size: 20px; text-align: center; }",
+            "cardTemplates": [
+                {
+                    "Name": "Card 1",
+                    "Front": "{{Expression}}",
+                    "Back": f"{{{{FrontSide}}}}<hr id=answer>{back_fields}",
+                }
+            ],
+        },
+    )
 
 
 def _build_fields(card: ExportRequest) -> dict:
@@ -72,30 +147,29 @@ def _build_fields(card: ExportRequest) -> dict:
 
 
 def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
+    if EXPORT_MODE == "full":
+        # Only "full" mode needs this- "basic" mode targets Anki's stock "Basic" note
+        # type, which always exists, so there's nothing to create.
+        _ensure_full_mode_note_type()
+
     if anki_note_id is None:
-        payload = {
-            "action": "addNote",
-            "version": 6,
-            "params": {
-                "note": {
-                    "deckName": DECK_NAME,
-                    "modelName": NOTE_TYPE,
-                    "fields": _build_fields(card),
-                    "options": {"allowDuplicate": False},
-                    "tags": ["anki-tool-v2"],
-                }
-            },
+        action = "addNote"
+        params = {
+            "note": {
+                "deckName": DECK_NAME,
+                "modelName": NOTE_TYPE,
+                "fields": _build_fields(card),
+                "options": {"allowDuplicate": False},
+                "tags": ["anki-tool-v2"],
+            }
         }
     else:
-        payload = {
-            "action": "updateNoteFields",
-            "version": 6,
-            "params": {
-                "note": {
-                    "id": anki_note_id,
-                    "fields": _build_fields(card),
-                }
-            },
+        action = "updateNoteFields"
+        params = {
+            "note": {
+                "id": anki_note_id,
+                "fields": _build_fields(card),
+            }
         }
     # anki_note_id is None- the normal case, and the only case before this parameter
     # existed- means there's no existing Anki note to target, so this builds a fresh
@@ -115,28 +189,12 @@ def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
     # silently accept a note that already exists in the deck- see the raise below for
     # how that surfaces.
 
-    try:
-        response = requests.post(ANKICONNECT_URL, json=payload, timeout=10)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        raise AnkiConnectError(
-            f"Could not reach AnkiConnect at {ANKICONNECT_URL}: {exc}"
-        ) from exc
-    # This except block only covers *transport*-level failures- AnkiConnect not running,
-    # connection refused, timeout, or an HTTP error status. `raise ... from exc` re-raises
-    # as an AnkiConnectError but keeps the original exception attached as its __cause__,
-    # so a full traceback still shows both the AnkiConnectError and the underlying
-    # requests exception that triggered it, instead of losing that context.
-
-    data = response.json()
-    if data.get("error"):
-        raise AnkiConnectError(data["error"])
-    # This second check is separate from the try/except above because AnkiConnect can
-    # respond with a normal HTTP 200 (so raise_for_status() above doesn't complain) while
-    # still reporting a logical failure inside its own JSON body- e.g. rejecting the note
-    # as a duplicate. data.get("error") returns None (falsy) when nothing went wrong, or
-    # AnkiConnect's error message string when something did- exactly the case
-    # test_export_card_raises_on_anki_error in tests/test_anki.py exercises.
+    data = _post_to_ankiconnect(action, params)
+    # _post_to_ankiconnect raises AnkiConnectError itself for both a transport failure
+    # (AnkiConnect unreachable) and a logical failure reported inside a normal 200
+    # response (e.g. AnkiConnect rejecting the note as a duplicate)- see its definition
+    # above, and test_export_card_raises_on_anki_error / test_export_card_raises_when_
+    # anki_unreachable in tests/test_anki.py for the two cases.
 
     return data["result"] if anki_note_id is None else anki_note_id
     # addNote's own "result" is the new note's ID, assigned by Anki- that's the value the

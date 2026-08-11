@@ -44,7 +44,7 @@ def parse_and_validate(file_content: str) -> list[str]: # `->` specifies expecte
 
     if len(words) > MAX_WORDS:
         raise BatchValidationError(
-            f"File contains {len(words)} words - the limit is {MAX_WORDS} per file."
+            f"File contains {len(words)} words- the limit is {MAX_WORDS} per file."
         )
     # This check runs before the per-word character check below on purpose- there's no
     # need to validate every individual word's characters if the file is already going

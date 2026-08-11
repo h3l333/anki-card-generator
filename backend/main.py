@@ -1,8 +1,15 @@
 # 3 FastAPI routes
+import json
+# Used only by _stream_batch_results below- each NDJSON line it yields is a plain dict
+# serialized by hand via json.dumps, not a Pydantic model, since StreamingResponse just
+# wants raw bytes/str chunks rather than something FastAPI can validate against a
+# response_model the way the other routes' return values are.
 from contextlib import asynccontextmanager
+from typing import Iterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from backend.anki import AnkiConnectError, export_card
 from backend.batch import BatchValidationError, parse_and_validate
@@ -19,7 +26,6 @@ from backend.llm import LLMError, generate_card, generate_cards_batch
 from backend.models import (
     BatchCardResult,
     BatchGenerateRequest,
-    BatchGenerateResponse,
     CardDraft,
     ExportRequest,
     GenerateRequest,
@@ -40,7 +46,7 @@ from backend.models import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # No migration tool yet (see ROADMAP.md) - this is what actually issues the
+    # No migration tool yet (see ROADMAP.md)- this is what actually issues the
     # CREATE TABLE statements against Postgres, since init_db() itself is never
     # called anywhere else.
     init_db()
@@ -128,14 +134,19 @@ def generate(request: GenerateRequest):
 # this try block at all, since it never calls OpenRouter in the first place.
 
 
-@app.post("/generate/batch", response_model=BatchGenerateResponse)
-def generate_batch(request: BatchGenerateRequest):
-    try:
-        words = parse_and_validate(request.file_content)
-    except BatchValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _stream_batch_results(words: list[str]) -> Iterator[str]:
+    # One NDJSON line per yield- frontend/index.js reads this response body
+    # incrementally (not as one parsed JSON document) so it can update a "3/12 done"
+    # progress counter and render each carousel card as its result arrives, instead of
+    # waiting for the whole batch (which can take minutes- see generate_card's 180s
+    # per-attempt timeout in backend/llm.py) before showing anything.
+    total = len(words)
+    yield json.dumps({"total": total}) + "\n"
+    # Always the very first line, before any word-specific line- lets the frontend learn
+    # N up front to render "0/N" immediately, rather than inferring N from how many
+    # result lines eventually arrive (which it can't know until the stream ends anyway).
 
-    results: list[BatchCardResult | None] = [None] * len(words)
+    results: list[BatchCardResult | None] = [None] * total
     to_generate: list[tuple[int, str]] = []
     for i, word in enumerate(words):
         existing_word = find_word_by_kanji(word)
@@ -159,48 +170,78 @@ def generate_batch(request: BatchGenerateRequest):
             ),
         )
     # Same duplicate check /generate does for a single word (see the generate() route
-    # above), just run per word before deciding what to hand to generate_cards_batch().
-    # A hit is reassembled into a BatchCardResult straight from Postgres (duplicate=True,
-    # word_id already set) and placed at its original index- no LLM call for that word. A
-    # miss is queued in to_generate, keeping its original index so it can be spliced back
-    # into `results` in file order once generate_cards_batch() returns.
+    # above), just run per word up front for the whole file- these are plain Postgres
+    # lookups (fast, synchronous), unlike the LLM calls below, so there's no streaming
+    # concern for this part: a hit is reassembled into a BatchCardResult straight from
+    # Postgres (duplicate=True, word_id already set) and placed at its original index. A
+    # miss is queued in to_generate, keeping its original index so results[i] still ends
+    # up correct once the loop below fills it in from generate_cards_batch().
 
-    generated = generate_cards_batch([word for _, word in to_generate])
-    for (i, _word), result in zip(to_generate, generated):
-        results[i] = result
-    # generate_cards_batch() only ever sees words that weren't already in Postgres- llm.py
-    # stays DB-free (see ROADMAP.md/CLAUDE.md), so the duplicate check above lives entirely
-    # in this route rather than being pushed down into generate_cards_batch() itself.
+    generated = iter(generate_cards_batch([word for _, word in to_generate]))
+    # iter() is a no-op on the real generate_cards_batch() (already a generator, hence
+    # already an iterator)- it's here so tests/test_main.py can keep mocking this call
+    # with return_value=<a plain list>, same as before this route streamed anything, and
+    # next(generated) below still works (next() requires an iterator; a bare list doesn't
+    # support it).
 
-    for result in results:
-        if result.card is None or result.duplicate:
-            continue
-        word_id = insert_word(kanji=result.word, reading=result.card.reading, source="batch")
-        insert_card(
-            word_id=word_id,
-            definition_ja=result.card.definition_ja,
-            nuance=result.card.nuance,
-            synonyms=result.card.synonyms,
-            antonyms=result.card.antonyms,
-            example_sentence=result.card.example_sentence,
-            jlpt_level=result.card.jlpt_level,
-        )
-        result.word_id = word_id
-    # Same insert_word/insert_card persistence /generate does for a single word. A failed
-    # word (result.card is None, result.error set instead) is skipped entirely- there's no
-    # card content to persist for it. A duplicate word is also skipped here- its row already
-    # exists (that's the whole point of the check above), so re-inserting it would create a
-    # second words/cards row for the same kanji. This loop only persists genuinely new
-    # results, giving each one a word_id so /export can find it via get_latest_export/
-    # record_export instead of always falling back to a bare addNote.
+    completed = 0
+    for i, word in enumerate(words):
+        if results[i] is None:
+            # This index was queued in to_generate above (not a duplicate)- results and
+            # to_generate were built by the same enumerate(words) loop under the same
+            # is-it-a-duplicate condition, so pulling from `generated` here in this same
+            # order lines each `next()` call up with the correct word, without needing to
+            # track which to_generate entry this is.
+            result = next(generated)
+            if result.card is not None:
+                word_id = insert_word(
+                    kanji=result.word, reading=result.card.reading, source="batch"
+                )
+                insert_card(
+                    word_id=word_id,
+                    definition_ja=result.card.definition_ja,
+                    nuance=result.card.nuance,
+                    synonyms=result.card.synonyms,
+                    antonyms=result.card.antonyms,
+                    example_sentence=result.card.example_sentence,
+                    jlpt_level=result.card.jlpt_level,
+                )
+                result.word_id = word_id
+            # Same insert_word/insert_card persistence /generate does for a single word. A
+            # failed word (result.card is None, result.error set instead) is skipped
+            # entirely- there's no card content to persist for it. Only genuinely new,
+            # successful results get persisted here; a word_id lets /export later find
+            # this word via get_latest_export/record_export instead of always falling
+            # back to a bare addNote.
+            results[i] = result
+        completed += 1
+        yield json.dumps(
+            {"completed": completed, "total": total, "result": results[i].model_dump()}
+        ) + "\n"
+    # Walking `words` in file order a second time (rather than yielding duplicates and
+    # generated results in the two separate passes they were computed in) is what keeps
+    # the streamed line order matching the uploaded file's order- a batch that mixes an
+    # already-known word with new ones would otherwise stream the (near-instant)
+    # duplicate before an earlier-in-the-file word that's still mid-generation.
 
-    return BatchGenerateResponse(results=results)
-# response_model=BatchGenerateResponse (unlike the plain /generate route above) tells
-# FastAPI explicitly what shape this route's successful response should be- used here
-# to generate accurate OpenAPI docs for a route whose return type isn't otherwise
-# obvious from the function signature alone. 400 ("Bad Request") reflects that the
-# problem is with what the client (frontend) sent- an invalid file- rather than
-# anything going wrong on the backend or with OpenRouter.
+
+@app.post("/generate/batch")
+def generate_batch(request: BatchGenerateRequest):
+    try:
+        words = parse_and_validate(request.file_content)
+    except BatchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Validation happens here, outside _stream_batch_results, specifically so a bad file
+    # still gets a normal HTTPException/JSON 400 response- once StreamingResponse below
+    # starts sending bytes, the status code is already committed to 200 and can't change.
+
+    return StreamingResponse(_stream_batch_results(words), media_type="application/x-ndjson")
+# No response_model here (unlike the plain /generate route above)- the body is a stream
+# of newline-delimited JSON objects, not one document matching a single Pydantic model,
+# so response_model has nothing to validate against. 400 ("Bad Request") on the
+# validation-error path reflects that the problem is with what the client (frontend)
+# sent- an invalid file- rather than anything going wrong on the backend or with
+# OpenRouter.
 
 
 @app.post("/export")

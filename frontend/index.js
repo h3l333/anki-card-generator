@@ -58,6 +58,128 @@ function clearStatus() {
 	statusBox.className = "status";
 }
 
+// Derives the "info" status box's colors (index.html's .status.info, driven by the
+// --info-bg/--info-text custom properties) from whichever accent color the user has
+// picked, instead of the old hardcoded pastel blue- see applyInfoColors below for where
+// this actually gets applied.
+const INFO_HUE_SHIFT = 20;
+// Degrees added to the accent's hue- keeps the info box visibly related to the chosen
+// accent (unlike a fixed unrelated color) while still reading as a distinct shade
+// rather than a plain tint of the same hue.
+const INFO_SATURATION_DELTA = 20;
+// Percentage points added to (or, at max saturation, subtracted from) the accent's own
+// saturation- see deriveInfoColors below for the two-branch logic this drives.
+
+function hexToRgb(hex) {
+	const clean = hex.replace("#", "");
+	return {
+		r: parseInt(clean.slice(0, 2), 16),
+		g: parseInt(clean.slice(2, 4), 16),
+		b: parseInt(clean.slice(4, 6), 16),
+	};
+}
+// `<input type="color">`'s .value is always a 7-character "#rrggbb" hex string- this
+// just splits that into its three byte components and reads each as base-16.
+
+function rgbToHsl(r, g, b) {
+	r /= 255;
+	g /= 255;
+	b /= 255;
+	const max = Math.max(r, g, b);
+	const min = Math.min(r, g, b);
+	let h = 0;
+	let s = 0;
+	const l = (max + min) / 2;
+
+	if (max !== min) {
+		const d = max - min;
+		s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+		switch (max) {
+			case r:
+				h = (g - b) / d + (g < b ? 6 : 0);
+				break;
+			case g:
+				h = (b - r) / d + 2;
+				break;
+			default:
+				h = (r - g) / d + 4;
+		}
+		h /= 6;
+	}
+	return { h: h * 360, s: s * 100, l: l * 100 };
+}
+
+function hslToRgb(h, s, l) {
+	h = ((h % 360) + 360) % 360 / 360;
+	s /= 100;
+	l /= 100;
+	if (s === 0) {
+		const v = Math.round(l * 255);
+		return { r: v, g: v, b: v };
+	}
+	const hue2rgb = (p, q, t) => {
+		if (t < 0) t += 1;
+		if (t > 1) t -= 1;
+		if (t < 1 / 6) return p + (q - p) * 6 * t;
+		if (t < 1 / 2) return q;
+		if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+		return p;
+	};
+	const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+	const p = 2 * l - q;
+	return {
+		r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+		g: Math.round(hue2rgb(p, q, h) * 255),
+		b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+	};
+}
+// hexToRgb -> rgbToHsl -> (shift hue/saturation) -> hslToRgb is the round trip
+// deriveInfoColors below needs- the accent picker only ever hands over a hex string,
+// but shifting "hue" and "saturation" independently only makes sense in HSL space, and
+// the final CSS background/contrast check both need RGB again afterward.
+
+function deriveInfoColors(accentHex) {
+	const accentRgb = hexToRgb(accentHex);
+	const { h, s, l } = rgbToHsl(accentRgb.r, accentRgb.g, accentRgb.b);
+
+	const newHue = h + INFO_HUE_SHIFT;
+	const newSaturation = s >= 100
+		? Math.max(0, s - INFO_SATURATION_DELTA)
+		: Math.min(100, s + INFO_SATURATION_DELTA);
+	// At maximum saturation there's no headroom left to raise it further, so this
+	// desaturates relative to the accent instead- otherwise (the common case) it
+	// raises saturation, giving the info box a more vivid version of the accent's hue
+	// neighborhood rather than a washed-out tint.
+
+	const infoRgb = hslToRgb(newHue, newSaturation, l);
+	const brightness =
+		(infoRgb.r * 299 + infoRgb.g * 587 + infoRgb.b * 114) / 1000;
+	// Perceived-brightness weighting (matches how human vision weights red/green/blue
+	// differently, not a straight average)- 0-255 scale, used only to pick a readable
+	// text color next.
+
+	return {
+		background: `hsl(${newHue}, ${newSaturation}%, ${l}%)`,
+		text: brightness < 128 ? "#ffffff" : "#000000",
+		// A dark info box needs white text to stay readable; a light one needs black-
+		// whichever the accent-derived background actually turns out to be, since hue/
+		// saturation shift alone (lightness is left as the accent's own) can land
+		// anywhere from very dark to very light depending on what the user picked.
+	};
+}
+
+function applyInfoColors() {
+	const { background, text } = deriveInfoColors(accentPicker.value);
+	document.documentElement.style.setProperty("--info-bg", background);
+	document.documentElement.style.setProperty("--info-text", text);
+}
+
+applyInfoColors();
+// Runs once up front so the info box already matches the default accent (index.html's
+// --accent/#accentPicker both default to #4a6fa5) before the user ever touches the
+// color picker, rather than showing the old hardcoded pastel blue until the first
+// "input" event below.
+
 // Live theming: these two listeners don't touch the backend at all- they just let the
 // user restyle the page instantly as they interact with the color/font pickers.
 accentPicker.addEventListener("input", () => {
@@ -66,6 +188,7 @@ accentPicker.addEventListener("input", () => {
 	// background)- no page reload or re-render needed, the browser recomputes styles
 	// as soon as the property changes.
 	document.documentElement.style.setProperty("--accent", accentPicker.value);
+	applyInfoColors();
 });
 
 fontPicker.addEventListener("change", () => {
@@ -87,7 +210,7 @@ generateBtn.addEventListener("click", async () => {
 	// stale card from a previous word remaining visible while a new one generates.
 
 	showStatus(
-		"Generating... structured JSON output can take a while (up to a few minutes) - see README Troubleshooting if it seems stuck.",
+		"Generating... structured JSON output can take a while (up to a few minutes)- see README Troubleshooting if it seems stuck.",
 		"info",
 	);
 	// Overwritten later by the duplicate-card message (below) or the error message
@@ -426,7 +549,7 @@ batchGenerateBtn.addEventListener("click", () => {
 	// upload before the new one's results are appended below.
 
 	showBatchStatus(
-		"Generating... structured JSON output can take a while per word (up to a few minutes each) - see README Troubleshooting if it seems stuck.",
+		"Generating... structured JSON output can take a while per word (up to a few minutes each)- see README Troubleshooting if it seems stuck.",
 		"info",
 	);
 
@@ -446,15 +569,15 @@ batchGenerateBtn.addEventListener("click", () => {
 				body: JSON.stringify({ file_content: reader.result }),
 			});
 
-			const data = await response.json().catch(() => null);
-			// Unlike the single-word flow, the response body is parsed *before* checking
-			// response.ok- that's because a 400 (bad batch file) still comes back with a
-			// JSON body containing a useful "detail" message (see backend/main.py), which
-			// the catch block below wants to show the user. `.catch(() => null)` guards
-			// against a response body that isn't valid JSON at all, falling back to null
-			// rather than letting that parsing failure escape as its own uncaught error.
-
 			if (!response.ok) {
+				// A 400 (bad batch file) is a normal, non-streamed JSON body with a
+				// "detail" message (see backend/main.py)- that only holds on the error
+				// path, since a *successful* response's body is newline-delimited JSON
+				// instead (handled below), not one JSON document response.json() could
+				// parse. `.catch(() => null)` guards against a body that isn't valid
+				// JSON at all, falling back to null rather than letting that parsing
+				// failure escape as its own uncaught error.
+				const data = await response.json().catch(() => null);
 				throw new Error(data?.detail || "bad-response");
 				// `data?.detail` is optional chaining- it safely reads `.detail` only if
 				// `data` isn't null/undefined, evaluating to undefined instead of throwing
@@ -463,12 +586,59 @@ batchGenerateBtn.addEventListener("click", () => {
 				// detail message to show.
 			}
 
-			for (const result of data.results) {
-				carousel.appendChild(buildCarouselCard(result));
+			const bodyReader = response.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = "";
+			let total = null;
+			let completed = 0;
+			// response.body is a ReadableStream of raw bytes- getReader()/TextDecoder
+			// turn that into decoded text incrementally as chunks arrive over the wire,
+			// rather than waiting for the whole response like response.json() would.
+			// `buffer` holds text read so far that hasn't formed a complete "\n"-
+			// terminated line yet, since a single chunk boundary has no relationship to
+			// where backend/main.py's _stream_batch_results happened to end a line.
+
+			while (true) {
+				const { done, value } = await bodyReader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				// { stream: true } tells TextDecoder a multi-byte UTF-8 character (e.g.
+				// any kanji/kana in a word or card field) might be split across this
+				// chunk and the next one, and to hold the split bytes over instead of
+				// decoding them as garbage now.
+
+				let newlineIndex;
+				while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+					const line = buffer.slice(0, newlineIndex);
+					buffer = buffer.slice(newlineIndex + 1);
+					if (!line) continue;
+					const event = JSON.parse(line);
+
+					if (!("result" in event)) {
+						// The leading {"total": N} line (see backend/main.py)- always
+						// the first line, but checked by shape rather than position so
+						// this loop doesn't have to track "is this the first line?"
+						// separately.
+						total = event.total;
+						showBatchStatus(`Generating... 0/${total} done.`, "info");
+						continue;
+					}
+
+					total = event.total;
+					completed = event.completed;
+					carousel.appendChild(buildCarouselCard(event.result));
+					showBatchStatus(
+						`Generating... ${completed}/${total} done. Each word can take up ` +
+							"to a few minutes- see README Troubleshooting if it seems stuck.",
+						"info",
+					);
+				}
 			}
-			// data.results is the list of BatchCardResult entries (backend/models.py)-
-			// one buildCarouselCard() call, and one appended card, per word in the
-			// original uploaded file, in the same order.
+			// One buildCarouselCard() call, and one appended card, per word in the
+			// original uploaded file, in the same order- backend/main.py's
+			// _stream_batch_results streams results in file order even though a
+			// duplicate word resolves near-instantly while a freshly-generated one can
+			// take minutes, so no reordering is needed here.
 		} catch (err) {
 			showBatchStatus(
 				err.message && err.message !== "bad-response"

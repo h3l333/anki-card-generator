@@ -115,11 +115,10 @@ class BatchCardResult(BaseModel):
 # Defaults to False so every pre-existing construction site (generate_cards_batch's own
 # BatchCardResult(word=..., card=...) / BatchCardResult(word=..., error=...)) keeps working
 # unchanged.
-
-
-class BatchGenerateResponse(BaseModel):
-    results: list[BatchCardResult]
-# The full response body for POST /generate/batch- a list with one BatchCardResult per word in
-# the uploaded file, preserving the file's original order. frontend/index.js iterates this list
-# to render one carousel card per result, checking each result's `error` field to decide
-# whether to show a normal editable card or an error message in its place.
+#
+# There's no BatchGenerateResponse wrapping a list of these- POST /generate/batch streams
+# newline-delimited JSON (see backend/main.py::_stream_batch_results), one line per word
+# plus a leading {"total": N} line, rather than returning one document containing every
+# BatchCardResult at once. frontend/index.js parses each line as it arrives and renders
+# one carousel card per result, checking each result's `error` field to decide whether to
+# show a normal editable card or an error message in its place.

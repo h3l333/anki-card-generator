@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
@@ -15,6 +16,18 @@ from backend.models import BatchCardResult, CardDraft
 # "backend.llm.generate_card")- main.py does `from backend.llm import generate_card`, which
 # creates a separate reference inside backend.main's namespace, and that's the reference the
 # route handler's unqualified `generate_card(...)` call actually looks up.
+
+
+def _read_batch_stream(response):
+    # POST /generate/batch streams newline-delimited JSON rather than one JSON document
+    # (see backend/main.py::_stream_batch_results), so response.json() doesn't work here-
+    # TestClient still buffers the whole streamed body into response.text before this
+    # function runs, it just isn't valid as a single json.loads() call. The first line is
+    # always {"total": N}; every line after that carries one word's BatchCardResult.
+    lines = [json.loads(line) for line in response.text.strip().split("\n")]
+    total = lines[0]["total"]
+    results = [line["result"] for line in lines[1:]]
+    return total, results
 
 
 def test_generate_route_returns_card(client, sample_card_json):
@@ -99,7 +112,9 @@ def test_generate_batch_route_returns_results(client, sample_card_json):
     ):
         response = client.post("/generate/batch", json={"file_content": "大人"})
     assert response.status_code == 200
-    body = response.json()["results"][0]
+    total, results = _read_batch_stream(response)
+    assert total == 1
+    body = results[0]
     assert body["word"] == "大人"
     assert body["word_id"] == 9
     mock_insert_word.assert_called_once_with(kanji="大人", reading=card.reading, source="batch")
@@ -144,7 +159,8 @@ def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_j
     ):
         response = client.post("/generate/batch", json={"file_content": "大人\n新語"})
     assert response.status_code == 200
-    results = response.json()["results"]
+    total, results = _read_batch_stream(response)
+    assert total == 2
     assert [r["word"] for r in results] == ["大人", "新語"]
 
     duplicate_result, generated_result = results
@@ -164,8 +180,58 @@ def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_j
     # words that actually need generating (asserted via call args, not just call count), so a
     # duplicate word never reaches an LLM call. insert_word/insert_card must fire once, only
     # for the genuinely new word- re-inserting the duplicate would create a second row for
-    # the same kanji. Response order ("大人" then "新語") must match the uploaded file's
-    # order even though the duplicate was resolved without ever touching generate_cards_batch.
+    # the same kanji. Streamed line order ("大人" then "新語") must match the uploaded
+    # file's order even though the duplicate was resolved (near-instantly, via Postgres)
+    # before the LLM call for "新語" even started- see _stream_batch_results in
+    # backend/main.py for how it re-walks `words` in file order to guarantee this.
+
+
+# Directly checks the progress-counter data itself (rather than just the final `result`
+# each line carries, like the tests above)- a 3-word batch mixing a duplicate, a
+# successful generation, and a failed one should still produce a leading {"total": 3}
+# line followed by "completed" counting 1, 2, 3 in file order, regardless of which kind
+# of result each word actually produced.
+def test_generate_batch_route_streams_progress_counts(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    existing_word = SimpleNamespace(id=7, kanji="大人", reading=sample_card_json["reading"])
+    existing_card = SimpleNamespace(
+        definition_ja=sample_card_json["definition_ja"],
+        nuance=sample_card_json["nuance"],
+        synonyms=sample_card_json["synonyms"],
+        antonyms=sample_card_json["antonyms"],
+        example_sentence=sample_card_json["example_sentence"],
+        jlpt_level=sample_card_json["jlpt_level"],
+    )
+    generated_results = [
+        BatchCardResult(word="新語", card=card),
+        BatchCardResult(word="失敗語", error="boom"),
+    ]
+
+    def fake_find_word_by_kanji(word):
+        return existing_word if word == "大人" else None
+
+    with (
+        patch(
+            "backend.main.parse_and_validate", return_value=["大人", "新語", "失敗語"]
+        ),
+        patch("backend.main.find_word_by_kanji", side_effect=fake_find_word_by_kanji),
+        patch("backend.main.get_card", return_value=existing_card),
+        patch("backend.main.generate_cards_batch", return_value=generated_results),
+        patch("backend.main.insert_word", return_value=9),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post(
+            "/generate/batch", json={"file_content": "大人\n新語\n失敗語"}
+        )
+
+    lines = [json.loads(line) for line in response.text.strip().split("\n")]
+    assert lines[0] == {"total": 3}
+    assert [line["completed"] for line in lines[1:]] == [1, 2, 3]
+    assert [line["total"] for line in lines[1:]] == [3, 3, 3]
+    assert [line["result"]["word"] for line in lines[1:]] == ["大人", "新語", "失敗語"]
+    # "total" is repeated on every per-word line (not just the leading one)- lets the
+    # frontend update its "X/N" counter from any single line without having to remember
+    # N separately from the first line it read.
 
 
 def test_generate_batch_route_skips_persistence_for_failed_words(client):
@@ -179,7 +245,8 @@ def test_generate_batch_route_skips_persistence_for_failed_words(client):
     ):
         response = client.post("/generate/batch", json={"file_content": "大人"})
     assert response.status_code == 200
-    assert response.json()["results"][0]["word_id"] is None
+    _total, results = _read_batch_stream(response)
+    assert results[0]["word_id"] is None
     mock_insert_word.assert_not_called()
     mock_insert_card.assert_not_called()
     # A result with no card (generate_card failed for this word- see BatchCardResult) has

@@ -6,6 +6,8 @@
 <style>
   :root {
     --accent: #4a6fa5;
+    --info-bg: #e8f0fe;
+    --info-text: #1a4f9c;
   }
   * { box-sizing: border-box; }
   body {
@@ -55,7 +57,7 @@
     display: none;
   }
   .status.error { background: #fdecea; color: #b3261e; display: block; }
-  .status.info { background: #e8f0fe; color: #1a4f9c; display: block; }
+  .status.info { background: var(--info-bg); color: var(--info-text); display: block; }
   .card {
     background: white;
     border: 1px solid #ddd;

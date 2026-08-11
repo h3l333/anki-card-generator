@@ -15,9 +15,9 @@ from backend.models import CardDraft
 #     requested word- cloud models can occasionally drift onto an unrelated word- and raises
 #     LLMError if OPENROUTER_API_KEY isn't set, if requests.post/parsing fails for any reason,
 #     or if both attempts keep drifting off the requested word.
-#   - generate_cards_batch(words: list[str]) -> list[BatchCardResult]: loops generate_card
-#     over a list of words, catching LLMError per word rather than failing the whole batch, so
-#     one bad word doesn't prevent the rest from generating.
+#   - generate_cards_batch(words: list[str]) -> Iterator[BatchCardResult]: a generator that
+#     loops generate_card over a list of words, catching LLMError per word rather than
+#     failing the whole batch, so one bad word doesn't prevent the rest from generating.
 # Every test that calls generate_card patches "backend.llm.requests.post" so no real network
 # call to OpenRouter is ever made- no OPENROUTER_API_KEY or internet connection is required for
 # these tests to pass, only the fake response object each test builds matters.
@@ -95,7 +95,10 @@ def test_generate_cards_batch_continues_after_one_failure(sample_card_json):
         return CardDraft(**{**sample_card_json, "expression": word})
 
     with patch("backend.llm.generate_card", side_effect=fake_generate_card):
-        results = generate_cards_batch(["大人", "犬"])
+        results = list(generate_cards_batch(["大人", "犬"]))
+    # generate_cards_batch is a generator (see backend/llm.py)- list(...) drains it into
+    # a plain list so it can be indexed below, same as callers that want every result at
+    # once (rather than one at a time, like backend/main.py's streaming route) would do.
 
     assert results[0].card.expression == "大人"
     assert results[0].error is None

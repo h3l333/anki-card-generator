@@ -31,15 +31,15 @@ For multiple words at once, use the Batch Upload section: a `.txt` file with one
 大前提
 ```
 
-Click "Generate from File" to get a horizontally-scrollable carousel of cards, one per word. Each is independently editable, discardable, and exportable, same as the single-word flow. If a word fails to generate, its card shows the error and the rest of the batch still completes; a malformed file (wrong characters, too many words) is rejected with an error before anything is generated.
+Click "Generate from File" to get a horizontally-scrollable carousel of cards, one per word. Results stream in as each word finishes rather than waiting for the whole batch, with a live "X/N done" progress counter above the carousel. Each card is independently editable, discardable, and exportable, same as the single-word flow. If a word fails to generate, its card shows the error and the rest of the batch still completes; a malformed file (wrong characters, too many words) is rejected with an error before anything is generated.
 
 ## Configuration
 
 - `OPENROUTER_API_KEY`: authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
 - `OPENROUTER_MODELS`: comma-separated list of candidate models, tried in order via OpenRouter's built-in model fallback (default: a few free-tier models; see PROMPTS.md).
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
-- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Basic`). `Basic` is a zero-config fallback with only Front/Back fields. Set up a custom note type matching the eight card fields and point these vars at it for a better fit.
-- `ANKI_EXPORT_MODE`: `basic` (default) folds all eight fields into `Front`/`Back` for Anki's stock `Basic` note type; `full` sends each field individually (`Expression`, `Reading`, `Definition`, `Nuance`, `Synonyms`, `Antonyms`, `Example`, `Jlpt`) for a custom note type with matching field names. Use `full` together with `ANKI_NOTE_TYPE` pointed at that custom note type.
+- `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Japanese Note Type` in `full` mode, `Basic` in `basic` mode- see `ANKI_EXPORT_MODE` below).
+- `ANKI_EXPORT_MODE`: `full` (default) sends each field individually (`Expression`, `Reading`, `Definition`, `Nuance`, `Synonyms`, `Antonyms`, `Example`, `Jlpt`) to a custom note type. `ANKI_NOTE_TYPE` defaults to `Japanese Note Type` in this mode- if that note type doesn't already exist in Anki, the first `full`-mode export creates it automatically via AnkiConnect's `createModel` action, with those eight fields and a basic front/back template, so this works with zero manual Anki setup. An existing note type with that name is left untouched (`createModel` is only ever called to create, never to update). `basic` folds all eight fields into `Front`/`Back` instead, for Anki's stock `Basic` note type- a zero-config fallback with only two fields. Set `ANKI_NOTE_TYPE` yourself to use a different note type name in either mode.
 
 ## Troubleshooting
 

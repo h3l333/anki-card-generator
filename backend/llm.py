@@ -2,6 +2,11 @@ import os
 # Reads OPENROUTER_API_KEY / OPENROUTER_MODELS from the environment below- see README
 # Configuration for what each one does and its default.
 
+from collections.abc import Iterator
+# Return-type annotation for generate_cards_batch below- it's a generator function
+# (built on `yield`, not `return`), and Iterator is the general type for "something
+# you can loop over once with next()", which is what a generator actually is at runtime.
+
 import requests
 # The HTTP client used to call OpenRouter directly- there's no official OpenRouter SDK
 # in use here, just a plain POST built by hand (see generate_card below).
@@ -142,7 +147,7 @@ def generate_card(word: str) -> CardDraft:
         # callers (backend/main.py, generate_cards_batch below) only ever need to
         # handle one exception type regardless of which step actually failed.
 
-        # Cloud models can also drift onto a different word - catch that
+        # Cloud models can also drift onto a different word- catch that
         # instead of silently returning a card for the wrong term.
         if word in card.expression:
             return card
@@ -163,18 +168,23 @@ def generate_card(word: str) -> CardDraft:
     # doesn't scope loop-body variables to the loop itself.
 
 
-def generate_cards_batch(words: list[str]) -> list[BatchCardResult]:
-    results = []
+def generate_cards_batch(words: list[str]) -> Iterator[BatchCardResult]:
     for word in words:
         try:
-            results.append(BatchCardResult(word=word, card=generate_card(word)))
+            yield BatchCardResult(word=word, card=generate_card(word))
         except LLMError as exc:
-            results.append(BatchCardResult(word=word, error=str(exc)))
-    return results
-    # Each word gets its own try/except, rather than one try/except wrapping the whole
+            yield BatchCardResult(word=word, error=str(exc))
+    # A generator rather than building and returning a list- backend/main.py's
+    # /generate/batch route streams one result at a time to the frontend as each word
+    # finishes (see _stream_batch_results there), so nothing should call generate_card for
+    # word N+1 before word N's result has already been handed back to the caller. Each
+    # word still gets its own try/except, rather than one try/except wrapping the whole
     # loop- this is what lets one bad word (rate limit, persistent word drift, whatever
     # triggered the LLMError) skip past without aborting the batch or losing results
     # already generated for earlier words. The BatchCardResult for a failed word carries
     # `error=str(exc)` and leaves `card` at its default of None; a succeeded word is the
     # reverse- see backend/models.py's BatchCardResult for why those two fields are
     # meant to be mutually exclusive.
+    # Calling this with an empty `words` list yields zero times- fine, since the only
+    # caller (backend/main.py) only ever iterates it in lockstep with a matching number
+    # of pending slots.

@@ -14,7 +14,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from backend.anki import AnkiConnectError, _build_fields, export_card
+from backend.anki import (
+    AnkiConnectError,
+    _build_fields,
+    _default_note_type,
+    _ensure_full_mode_note_type,
+    export_card,
+)
 
 # backend/anki.py has two functions under test in this file:
 #   - _build_fields(card: ExportRequest) -> dict: pure- no network calls, no side effects. It
@@ -34,7 +40,8 @@ from backend.anki import AnkiConnectError, _build_fields, export_card
 # Values taken from the `sample_export_request` fixture in `conftest.py`-
 # the following block of code ensures that `_build_fields` correctly folds the `ExportRequest`
 # instance received from the frontend, derived from the LLM response in the form of a `CardDraft` object.
-def test_build_fields_folds_card_into_front_and_back(sample_export_request):
+def test_build_fields_folds_card_into_front_and_back(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     fields = _build_fields(sample_export_request)
     assert fields["Front"] == "大人"
     assert fields["Back"] == (
@@ -83,7 +90,8 @@ def test_build_fields_raises_on_invalid_export_mode(sample_export_request, monke
 # Checks the "happy path" of export_card: a mocked AnkiConnect response with a numeric
 # "result" and no "error" should let export_card return normally, having actually called
 # requests.post exactly once and having called .raise_for_status() on the response.
-def test_export_card_succeeds(sample_export_request):
+def test_export_card_succeeds(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     mock_response = MagicMock()
     mock_response.json.return_value = {"result": 12345, "error": None}
     with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
@@ -98,7 +106,10 @@ def test_export_card_succeeds(sample_export_request):
     # "result" value, not the (absent) input.
 
 
-def test_export_card_updates_existing_note_when_note_id_given(sample_export_request):
+def test_export_card_updates_existing_note_when_note_id_given(
+    sample_export_request, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     mock_response = MagicMock()
     mock_response.json.return_value = {"result": None, "error": None}
     with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
@@ -124,7 +135,8 @@ def test_export_card_updates_existing_note_when_note_id_given(sample_export_requ
 # inspecting mock_post.call_args lets this test look inside the JSON payload backend/anki.py
 # built, confirming _build_fields' output and the "anki-tool-v2" tag both made it into the
 # real request shape, without needing a real AnkiConnect server to receive it.
-def test_export_card_sends_expected_payload(sample_export_request):
+def test_export_card_sends_expected_payload(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     mock_response = MagicMock()
     mock_response.json.return_value = {"result": 1, "error": None}
     with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
@@ -143,7 +155,8 @@ def test_export_card_sends_expected_payload(sample_export_request):
 # raise_for_status failure) but reporting a logical failure in its own JSON body- e.g. Anki
 # rejecting the note as a duplicate. backend/anki.py checks data.get("error") after the
 # request succeeds and raises AnkiConnectError with that message if it's set.
-def test_export_card_raises_on_anki_error(sample_export_request):
+def test_export_card_raises_on_anki_error(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "result": None,
@@ -157,9 +170,103 @@ def test_export_card_raises_on_anki_error(sample_export_request):
 # isn't running), so requests.post itself raises rather than returning a response object.
 # backend/anki.py wraps that call in a try/except requests.RequestException block and
 # re-raises it as an AnkiConnectError with a clearer message, which is what this test checks.
-def test_export_card_raises_when_anki_unreachable(sample_export_request):
+def test_export_card_raises_when_anki_unreachable(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     with patch(
         "backend.anki.requests.post", side_effect=requests.ConnectionError("refused")
     ):
         with pytest.raises(AnkiConnectError, match="Could not reach AnkiConnect"):
             export_card(sample_export_request)
+
+
+# NOTE_TYPE's own default (used when ANKI_NOTE_TYPE isn't set) is mode-dependent: "Basic"
+# for "basic" mode (Anki's stock note type), "Japanese Note Type" for "full" mode, so that
+# _ensure_full_mode_note_type has a non-colliding name to auto-create instead of "full"
+# mode silently defaulting to "Basic" and then failing in addNote for lacking the other
+# seven fields.
+def test_default_note_type_is_mode_dependent():
+    assert _default_note_type("basic") == "Basic"
+    assert _default_note_type("full") == "Japanese Note Type"
+    assert _default_note_type("bogus") == "Basic"
+
+
+# _ensure_full_mode_note_type is the "full" mode counterpart to the createModel-avoidance
+# concern above- it must never call createModel when NOTE_TYPE already exists, since
+# createModel has no "update" mode and would risk clobbering a note type the user
+# customized (templates, styling, extra fields).
+def test_ensure_full_mode_note_type_skips_creation_when_already_exists(monkeypatch):
+    monkeypatch.setattr("backend.anki.NOTE_TYPE", "Japanese")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": ["Basic", "Japanese"], "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        _ensure_full_mode_note_type()
+
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["json"]["action"] == "modelNames"
+
+
+# When NOTE_TYPE is missing from AnkiConnect's modelNames result, _ensure_full_mode_note_type
+# should call createModel with the eight FULL_MODE_FIELDS as inOrderFields, so a fresh Anki
+# profile ends up with a note type matching what _build_fields sends in "full" mode.
+def test_ensure_full_mode_note_type_creates_missing_note_type(monkeypatch):
+    monkeypatch.setattr("backend.anki.NOTE_TYPE", "Japanese")
+    model_names_response = MagicMock()
+    model_names_response.json.return_value = {"result": ["Basic"], "error": None}
+    create_model_response = MagicMock()
+    create_model_response.json.return_value = {"result": {}, "error": None}
+
+    with patch(
+        "backend.anki.requests.post",
+        side_effect=[model_names_response, create_model_response],
+    ) as mock_post:
+        _ensure_full_mode_note_type()
+
+    assert mock_post.call_count == 2
+    payload = mock_post.call_args_list[1].kwargs["json"]
+    assert payload["action"] == "createModel"
+    assert payload["params"]["modelName"] == "Japanese"
+    assert payload["params"]["inOrderFields"] == [
+        "Expression", "Reading", "Definition", "Nuance",
+        "Synonyms", "Antonyms", "Example", "Jlpt",
+    ]
+    assert payload["params"]["cardTemplates"][0]["Front"] == "{{Expression}}"
+
+
+# End-to-end check that export_card wires _ensure_full_mode_note_type in ahead of the
+# actual addNote call when EXPORT_MODE is "full"- three AnkiConnect round trips in order
+# (modelNames, createModel, addNote), not just the createModel logic in isolation above.
+def test_export_card_ensures_note_type_before_exporting_in_full_mode(
+    sample_export_request, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "full")
+    monkeypatch.setattr("backend.anki.NOTE_TYPE", "Japanese")
+
+    model_names_response = MagicMock()
+    model_names_response.json.return_value = {"result": [], "error": None}
+    create_model_response = MagicMock()
+    create_model_response.json.return_value = {"result": {}, "error": None}
+    add_note_response = MagicMock()
+    add_note_response.json.return_value = {"result": 42, "error": None}
+
+    with patch(
+        "backend.anki.requests.post",
+        side_effect=[model_names_response, create_model_response, add_note_response],
+    ) as mock_post:
+        note_id = export_card(sample_export_request)
+
+    assert note_id == 42
+    actions = [call.kwargs["json"]["action"] for call in mock_post.call_args_list]
+    assert actions == ["modelNames", "createModel", "addNote"]
+
+
+# "basic" mode should never touch modelNames/createModel at all- only "full" mode (the
+# default) needs a note type existence check, since "Basic" always exists.
+def test_export_card_does_not_check_note_type_in_basic_mode(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": 1, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        export_card(sample_export_request)
+
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["json"]["action"] == "addNote"

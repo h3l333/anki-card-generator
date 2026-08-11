@@ -165,3 +165,45 @@ distinct from Ollama's `format` parameter used previously.
   raises `ValueError` rather than silently falling back to `basic`. Covered
   by new tests in `tests/test_anki.py`; see README.md Configuration and
   ARCHITECTURE.md.
+- 2026-08-11: `full` mode no longer requires the custom note type to already
+  exist in Anki (`backend/anki.py::_ensure_full_mode_note_type`). Before the
+  first `full`-mode export, it checks AnkiConnect's `modelNames` for
+  `ANKI_NOTE_TYPE` and, if missing, calls `createModel` with the eight
+  `FULL_MODE_FIELDS` and a basic front/back template- previously a missing
+  note type just surfaced as an opaque AnkiConnect error from `addNote`. A
+  note type that already exists is left untouched (`createModel` only ever
+  creates). Also unrelated to the prompt/generation call. Covered by new
+  tests in `tests/test_anki.py`; see README.md Configuration.
+- 2026-08-11: `ANKI_NOTE_TYPE`'s default is now mode-dependent (`backend/anki.py`)-
+  `Basic` in `basic` mode (unchanged), `Japanese Note Type` in `full` mode,
+  instead of always `Basic`. Previously `full` mode with an unset
+  `ANKI_NOTE_TYPE` would default to `Basic`, which already exists in every
+  Anki profile, so `_ensure_full_mode_note_type` would skip creation and
+  `addNote` would then fail- `Basic` only has Front/Back, not the eight
+  fields `full` mode sends. The new default doesn't collide with a stock
+  note type, so `full` mode now works with zero note-type config; setting
+  `ANKI_NOTE_TYPE` still overrides it either way. See README.md
+  Configuration.
+- 2026-08-11: `ANKI_EXPORT_MODE`'s default flipped from `basic` to `full`
+  (`backend/anki.py`), superseding the `basic` (default) framing in the
+  2026-08-10 entry above. Now that `full` mode self-provisions its note
+  type (the two entries directly above this one), it carries no more setup
+  burden than `basic` while exporting all eight card fields into Anki
+  instead of folding them into just `Front`/`Back`- so it's the better
+  default, not just an opt-in. `basic` is still available and unchanged.
+  Tests in `tests/test_anki.py` that specifically exercise `basic`-mode
+  behavior now set `EXPORT_MODE` explicitly rather than relying on the
+  default. See README.md Configuration.
+- 2026-08-11: `POST /generate/batch` now streams results instead of
+  returning one JSON document once the whole batch finishes
+  (`backend/main.py::_stream_batch_results`, `backend/llm.py::generate_cards_batch`
+  converted to a generator). A leading `{"total": N}` line is followed by
+  one `{"completed", "total", "result"}` line per word, in the uploaded
+  file's original order, letting `frontend/index.js` show a live "X/N done"
+  counter and render each carousel card as it arrives rather than after
+  the entire batch (which can take minutes- see `generate_card`'s 180s
+  per-attempt timeout) completes. Unrelated to the prompt/generation call
+  itself. `BatchGenerateResponse` (`backend/models.py`) was removed- there's
+  no longer a single response document it would describe. Covered by new
+  tests in `tests/test_llm.py` and `tests/test_main.py`; see README.md
+  Usage.
