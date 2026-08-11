@@ -1,6 +1,6 @@
 # Anki Tool v2
 
-[![CI](https://github.com/h3l333/anki-app-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/h3l333/anki-app-v2/actions/workflows/ci.yml)
+[![CI](https://github.com/h3l333/anki-card-generator/actions/workflows/ci.yml/badge.svg)](https://github.com/h3l333/anki-card-generator/actions/workflows/ci.yml)
 
 Generate Japanese Anki flashcards using the OpenRouter API (free-tier LLM access).
 
