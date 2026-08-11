@@ -62,13 +62,15 @@ function clearStatus() {
 // --info-bg/--info-text custom properties) from whichever accent color the user has
 // picked, instead of the old hardcoded pastel blue- see applyInfoColors below for where
 // this actually gets applied.
-const INFO_HUE_SHIFT = 20;
-// Degrees added to the accent's hue- keeps the info box visibly related to the chosen
-// accent (unlike a fixed unrelated color) while still reading as a distinct shade
-// rather than a plain tint of the same hue.
-const INFO_SATURATION_DELTA = 20;
-// Percentage points added to (or, at max saturation, subtracted from) the accent's own
-// saturation- see deriveInfoColors below for the two-branch logic this drives.
+const INFO_BG_LIGHTEN = 12;
+// Percentage points added to the accent's own lightness for the box background- capped
+// so it never quite reaches pure white, since the box still needs to read as distinct
+// from the page background.
+const INFO_BG_MAX_LIGHTNESS = 96;
+const INFO_TEXT_DARKEN = 30;
+// Percentage points subtracted from the box's (already-lightened) lightness for the
+// text color, so the text always reads as darker than the box it sits in.
+const INFO_TEXT_MIN_LIGHTNESS = 4;
 
 function hexToRgb(hex) {
 	const clean = hex.replace("#", "");
@@ -142,29 +144,14 @@ function deriveInfoColors(accentHex) {
 	const accentRgb = hexToRgb(accentHex);
 	const { h, s, l } = rgbToHsl(accentRgb.r, accentRgb.g, accentRgb.b);
 
-	const newHue = h + INFO_HUE_SHIFT;
-	const newSaturation = s >= 100
-		? Math.max(0, s - INFO_SATURATION_DELTA)
-		: Math.min(100, s + INFO_SATURATION_DELTA);
-	// At maximum saturation there's no headroom left to raise it further, so this
-	// desaturates relative to the accent instead- otherwise (the common case) it
-	// raises saturation, giving the info box a more vivid version of the accent's hue
-	// neighborhood rather than a washed-out tint.
-
-	const infoRgb = hslToRgb(newHue, newSaturation, l);
-	const brightness =
-		(infoRgb.r * 299 + infoRgb.g * 587 + infoRgb.b * 114) / 1000;
-	// Perceived-brightness weighting (matches how human vision weights red/green/blue
-	// differently, not a straight average)- 0-255 scale, used only to pick a readable
-	// text color next.
+	const bgLightness = Math.min(l + INFO_BG_LIGHTEN, INFO_BG_MAX_LIGHTNESS);
+	const textLightness = Math.max(bgLightness - INFO_TEXT_DARKEN, INFO_TEXT_MIN_LIGHTNESS);
+	// Same hue/saturation as the accent throughout- only lightness moves, so the box
+	// reads as a lighter tint of the accent and the text as a darker shade of the box.
 
 	return {
-		background: `hsl(${newHue}, ${newSaturation}%, ${l}%)`,
-		text: brightness < 128 ? "#ffffff" : "#000000",
-		// A dark info box needs white text to stay readable; a light one needs black-
-		// whichever the accent-derived background actually turns out to be, since hue/
-		// saturation shift alone (lightness is left as the accent's own) can land
-		// anywhere from very dark to very light depending on what the user picked.
+		background: `hsl(${h}, ${s}%, ${bgLightness}%)`,
+		text: `hsl(${h}, ${s}%, ${textLightness}%)`,
 	};
 }
 
