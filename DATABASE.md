@@ -14,10 +14,11 @@ already been generated:
   Anki note that export produced. That's what lets a later re-export update the existing
   Anki note (`updateNoteFields`) instead of creating a duplicate one (`addNote`).
 
-**Caveat:** the "never spend an LLM call twice" goal is only enforced for the
-single-word flow today. Batch `.txt` uploads have no pre-generation duplicate check-
-every word in a batch file gets a fresh LLM call and a fresh `words`/`cards` row
-regardless of whether it's already in Postgres (see `ARCHITECTURE.md`, `ROADMAP.md`).
+The "never spend an LLM call twice" goal is enforced for both flows: `/generate` and
+`/generate/batch` both call `find_word_by_kanji` before generating, per word in the
+batch case. A hit returns the existing card straight from Postgres (`duplicate=True`,
+reusing the existing `word_id`) instead of spending a fresh LLM call; only genuinely
+new words get a fresh `words`/`cards` row (see `ARCHITECTURE.md`).
 
 ## Storage choice
 
