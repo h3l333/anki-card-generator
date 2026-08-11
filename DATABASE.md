@@ -23,7 +23,10 @@ new words get a fresh `words`/`cards` row (see `ARCHITECTURE.md`).
 `find_word_by_kanji` matches on kanji **and** `words.level` together- the same word
 requested at a different JLPT level is treated as a new word, since its card's language
 would need regenerating for the new audience. See `PROMPTS.md` for how `level` shapes
-the generation prompt.
+the generation prompt. A composite index on `(kanji, level)` (`backend/db.py`'s
+`ix_words_kanji_level`) backs this lookup- like the `level` column itself, `create_all()`
+won't add this index to a `words` table that already exists, so it needs a hand-run
+`CREATE INDEX ix_words_kanji_level ON words (kanji, level);` in that case.
 
 ## Storage choice
 

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 # BaseModel is Pydantic's core class- subclassing it turns a plain class into a schema that
 # validates and parses data automatically (e.g. rejecting a request body that's missing a
@@ -5,10 +7,17 @@ from pydantic import BaseModel, Field
 # Field(...) attaches metadata (like `description`) to an individual field without changing its
 # type or default- see the note on CardDraft below for why that metadata matters here.
 
+JlptLevel = Literal["N5", "N4", "N3", "N2", "N1"]
+# Shared by GenerateRequest/BatchGenerateRequest below- constrains `level` to the five real
+# JLPT levels so a typo'd or arbitrary value (e.g. "n3", "N3 ") can't slip past FastAPI's
+# validation and silently create its own distinct Word row in find_word_by_kanji's
+# (kanji, level) duplicate-check key (backend/db.py), or get interpolated as-is into the
+# Japanese prompt backend/llm.py sends to OpenRouter.
+
 
 class GenerateRequest(BaseModel):
     word: str
-    level: str | None = None
+    level: JlptLevel | None = None
 # The request body shape for POST /generate (backend/main.py)- the word the user typed into
 # the frontend's word input box, plus which JLPT level to cater definition_ja/nuance/
 # example_sentence's language to. `level` is optional- an unset value falls back to
@@ -90,7 +99,7 @@ class ExportRequest(BaseModel):
 
 class BatchGenerateRequest(BaseModel):
     file_content: str
-    level: str | None = None
+    level: JlptLevel | None = None
 # The request body shape for POST /generate/batch- the raw text contents of the uploaded
 # .txt file, read client-side via FileReader in frontend/index.js and sent as a plain string
 # rather than a file upload, so backend/batch.py never has to deal with multipart form data.

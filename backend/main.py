@@ -76,9 +76,16 @@ app.add_middleware(
 # backend returns.
 
 
+def _resolve_level(level: str | None) -> str:
+    return level or JLPT_LEVEL_DEFAULT
+# Shared by both routes below so the request-level-or-env-default fallback is decided in
+# exactly one place, the same way MODEL_NAMES resolves OPENROUTER_MODELS' fallback once at
+# import time in backend/llm.py, rather than each route re-deriving it inline.
+
+
 @app.post("/generate", response_model=GenerateResponse)
 def generate(request: GenerateRequest):
-    level = request.level or JLPT_LEVEL_DEFAULT
+    level = _resolve_level(request.level)
     existing_word = find_word_by_kanji(request.word, level=level)
     if existing_word is not None:
         existing_card = get_card(existing_word.id)
@@ -243,7 +250,7 @@ def generate_batch(request: BatchGenerateRequest):
     # still gets a normal HTTPException/JSON 400 response- once StreamingResponse below
     # starts sending bytes, the status code is already committed to 200 and can't change.
 
-    level = request.level or JLPT_LEVEL_DEFAULT
+    level = _resolve_level(request.level)
     return StreamingResponse(
         _stream_batch_results(words, level), media_type="application/x-ndjson"
     )

@@ -6,6 +6,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
+    Index,
     String,
     Text,
     TIMESTAMP,
@@ -78,8 +79,17 @@ class Base(DeclarativeBase):
 
 class Word(Base):
     __tablename__ = "words"
+    __table_args__ = (Index("ix_words_kanji_level", "kanji", "level"),)
     # __tablename__ is the one required piece of per-class config- everything else below
-    # is inferred from the type-annotated class attributes themselves.
+    # is inferred from the type-annotated class attributes themselves. The index matches
+    # find_word_by_kanji's (kanji, level) lookup below- without it, every duplicate-check
+    # call (run before *every* single-word and batch-word generation) is a sequential scan,
+    # and row count now grows with kanji x level combinations instead of just kanji, since
+    # the same word regenerated at a different level gets its own row. Same caveat as the
+    # level column itself: create_all() won't retrofit this index onto a `words` table that
+    # already exists- needs a hand-run `CREATE INDEX ix_words_kanji_level ON words (kanji,
+    # level);` (see the level column's ALTER TABLE note below), since there's no migration
+    # tool yet (see ROADMAP.md).
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kanji: Mapped[str] = mapped_column(String)

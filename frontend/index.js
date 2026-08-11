@@ -70,10 +70,14 @@ const INFO_BG_LIGHTEN = 12;
 // so it never quite reaches pure white, since the box still needs to read as distinct
 // from the page background.
 const INFO_BG_MAX_LIGHTNESS = 96;
-const INFO_TEXT_DARKEN = 30;
-// Percentage points subtracted from the box's (already-lightened) lightness for the
-// text color, so the text always reads as darker than the box it sits in.
+const INFO_TEXT_SHIFT = 40;
+// Percentage points the text color moves *away* from the box background- toward black
+// for a light background, toward white for a dark one (see deriveInfoColors below). A
+// fixed same-direction darken (rather than this either-direction shift) would collapse
+// toward unreadable for a very dark accent, where there's little headroom left to darken
+// further- shifting toward whichever end has more room keeps a real gap at both extremes.
 const INFO_TEXT_MIN_LIGHTNESS = 4;
+const INFO_TEXT_MAX_LIGHTNESS = 92;
 
 function hexToRgb(hex) {
 	const clean = hex.replace("#", "");
@@ -114,43 +118,26 @@ function rgbToHsl(r, g, b) {
 	return { h: h * 360, s: s * 100, l: l * 100 };
 }
 
-function hslToRgb(h, s, l) {
-	h = ((h % 360) + 360) % 360 / 360;
-	s /= 100;
-	l /= 100;
-	if (s === 0) {
-		const v = Math.round(l * 255);
-		return { r: v, g: v, b: v };
-	}
-	const hue2rgb = (p, q, t) => {
-		if (t < 0) t += 1;
-		if (t > 1) t -= 1;
-		if (t < 1 / 6) return p + (q - p) * 6 * t;
-		if (t < 1 / 2) return q;
-		if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-		return p;
-	};
-	const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-	const p = 2 * l - q;
-	return {
-		r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
-		g: Math.round(hue2rgb(p, q, h) * 255),
-		b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
-	};
-}
-// hexToRgb -> rgbToHsl -> (shift hue/saturation) -> hslToRgb is the round trip
-// deriveInfoColors below needs- the accent picker only ever hands over a hex string,
-// but shifting "hue" and "saturation" independently only makes sense in HSL space, and
-// the final CSS background/contrast check both need RGB again afterward.
+// hexToRgb -> rgbToHsl -> (shift lightness) -> hsl() string is the round trip
+// deriveInfoColors below needs- the accent picker only ever hands over a hex string, but
+// shifting "lightness" independently only makes sense in HSL space. No RGB conversion
+// back is needed- the CSS custom properties it sets are handed to the browser as hsl()
+// strings directly.
 
 function deriveInfoColors(accentHex) {
 	const accentRgb = hexToRgb(accentHex);
 	const { h, s, l } = rgbToHsl(accentRgb.r, accentRgb.g, accentRgb.b);
 
 	const bgLightness = Math.min(l + INFO_BG_LIGHTEN, INFO_BG_MAX_LIGHTNESS);
-	const textLightness = Math.max(bgLightness - INFO_TEXT_DARKEN, INFO_TEXT_MIN_LIGHTNESS);
+	const textLightness = bgLightness >= 50
+		? Math.max(bgLightness - INFO_TEXT_SHIFT, INFO_TEXT_MIN_LIGHTNESS)
+		: Math.min(bgLightness + INFO_TEXT_SHIFT, INFO_TEXT_MAX_LIGHTNESS);
 	// Same hue/saturation as the accent throughout- only lightness moves, so the box
-	// reads as a lighter tint of the accent and the text as a darker shade of the box.
+	// reads as a tint of the accent and the text a contrasting shade of the box. Which
+	// direction the text shifts depends on the box's own lightness (not the original
+	// accent's)- a light box darkens its text, a dark box lightens its text- so the
+	// text always has room to move toward, rather than defaulting to "always darker"
+	// and running out of room for accents that are already near-black.
 
 	return {
 		background: `hsl(${h}, ${s}%, ${bgLightness}%)`,
