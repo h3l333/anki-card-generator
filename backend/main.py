@@ -4,8 +4,9 @@ import json
 # serialized by hand via json.dumps, not a Pydantic model, since StreamingResponse just
 # wants raw bytes/str chunks rather than something FastAPI can validate against a
 # response_model the way the other routes' return values are.
+
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
-from typing import Iterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +23,12 @@ from backend.db import (
     insert_word,
     record_export,
 )
-from backend.llm import JLPT_LEVEL_DEFAULT, LLMError, generate_card, generate_cards_batch
+from backend.llm import (
+    JLPT_LEVEL_DEFAULT,
+    LLMError,
+    generate_card,
+    generate_cards_batch,
+)
 from backend.models import (
     BatchCardResult,
     BatchGenerateRequest,
@@ -31,6 +37,7 @@ from backend.models import (
     GenerateRequest,
     GenerateResponse,
 )
+
 # Every name imported here (generate_card, export_card, parse_and_validate,
 # generate_cards_batch) becomes its own separate reference living in *this* module's
 # namespace, distinct from the original in backend/llm.py, backend/anki.py, etc. The

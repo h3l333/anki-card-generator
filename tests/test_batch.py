@@ -1,7 +1,11 @@
 # At a high level, test_batch.py tests one function: parse_and_validate.
 # parse_and_validate ensures an uploaded .txt file's contents are valid prior to any card generation.
 import pytest
-from backend.batch import BatchValidationError, parse_and_validate # Class and function from ´batch.py´ module.
+
+from backend.batch import (  # Class and function from ´batch.py´ module.
+    BatchValidationError,
+    parse_and_validate,
+)
 
 # backend/batch.py defines two things imported above:
 #   - parse_and_validate(file_content: str) -> list[str]: takes the raw text of an uploaded

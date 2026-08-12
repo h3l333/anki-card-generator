@@ -5,9 +5,9 @@
 # defaults), so `docker compose up -d` must be running first. If Postgres isn't reachable,
 # tests here fail with a connection error rather than being skipped- that's read as "is the
 # container up", not "is the code broken".
-import pytest
 from datetime import datetime
 
+import pytest
 from sqlalchemy import delete
 
 from backend.db import (

@@ -3,18 +3,25 @@ import os
 # stay overridable per-machine without touching this file (see README Configuration).
 
 from sqlalchemy import (
+    TIMESTAMP,
     BigInteger,
     Boolean,
     ForeignKey,
     Index,
     String,
     Text,
-    TIMESTAMP,
     create_engine,
     select,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
 from sqlalchemy.sql import func
+
 # create_engine builds the actual connection pool SQLAlchemy talks to Postgres through.
 # DeclarativeBase is the class every ORM-mapped table below inherits from- subclassing it
 # is what turns a plain Python class into something SQLAlchemy knows how to translate into

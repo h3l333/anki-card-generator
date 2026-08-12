@@ -1,6 +1,7 @@
 # `test_anki.py` verifies that the bridge between the app and Anki works as expected, *without*
 # needing Anki to be open/running.
 from unittest.mock import MagicMock, patch
+
 # Import key utilities from Python's built-in standard library.
 #   - MagicMock: Mock object used to substitute real classes or objects during testing.
 #   - patch: Context manager that, when used with the `with` statement temporarily replaces an object
@@ -10,7 +11,6 @@ from unittest.mock import MagicMock, patch
 #   decorator that temporarily replaces hardcoded functions/classes with mock objects during a single test run.
 #   In Python, a decorator is a function that wraps around another to change or extend its behaviour without modifying
 #   the code inside it.
-
 import pytest
 import requests
 
@@ -84,17 +84,29 @@ def test_build_fields_sends_each_field_individually_in_full_mode(
 def test_build_fields_raises_on_invalid_export_mode(sample_export_request, monkeypatch):
     monkeypatch.setattr("backend.anki.EXPORT_MODE", "bogus")
     with pytest.raises(ValueError, match="ANKI_EXPORT_MODE"):
+        # with, in essence, means "temporarily enter this special context, run this code and handle whatever needs to happen when leaving it."
+        # Here, the code enters a "expecting ValueError" context.
         _build_fields(sample_export_request)
+        # Point of the function:  prove that garbage config fails loudly with a message pointing at the right setting,
+        # instead of silently mis-behaving.
 
+
+# pytest.raises(ValueError) alone would pass as long as any ValueError gets raised inside the with block, regardless of message.
+# Adding match="ANKI_EXPORT_MODE" tightens that: after catching the ValueError, pytest takes str(exception) and
+# runs re.search("ANKI_EXPORT_MODE", str(exception)) against it. The test only passes if that regex actually finds a match somewhere in the
+# exception's message.
 
 # Checks the "happy path" of export_card: a mocked AnkiConnect response with a numeric
 # "result" and no "error" should let export_card return normally, having actually called
 # requests.post exactly once and having called .raise_for_status() on the response.
+# At a high level, it tests that export_card() successfully exports an Anki card.
 def test_export_card_succeeds(sample_export_request, monkeypatch):
-    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
-    mock_response = MagicMock()
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic") # monkeypatch is an instance of the MonkeyPatch class.
+    # The MonkeyPatch class has the main responsibility of changing the program's environment for a test, remembering the original
+    # state and restoring it when the test finishes. setattr() changes an attribute.
+    mock_response = MagicMock() # Creates a mock object that can be configured and inspected.
     mock_response.json.return_value = {"result": 12345, "error": None}
-    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post: # patch() replaces an object and later restores it.
         note_id = export_card(sample_export_request)
     assert note_id == 12345
     mock_post.assert_called_once()
@@ -174,9 +186,8 @@ def test_export_card_raises_when_anki_unreachable(sample_export_request, monkeyp
     monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
     with patch(
         "backend.anki.requests.post", side_effect=requests.ConnectionError("refused")
-    ):
-        with pytest.raises(AnkiConnectError, match="Could not reach AnkiConnect"):
-            export_card(sample_export_request)
+    ), pytest.raises(AnkiConnectError, match="Could not reach AnkiConnect"):
+        export_card(sample_export_request)
 
 
 # NOTE_TYPE's own default (used when ANKI_NOTE_TYPE isn't set) is mode-dependent: "Basic"

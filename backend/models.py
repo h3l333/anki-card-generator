@@ -1,6 +1,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
 # BaseModel is Pydantic's core class- subclassing it turns a plain class into a schema that
 # validates and parses data automatically (e.g. rejecting a request body that's missing a
 # required field, or that has the wrong type) instead of that validation being written by hand.
