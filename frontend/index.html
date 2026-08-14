@@ -29,6 +29,8 @@
     color: #555;
   }
   .settings input[type="color"] { border: none; width: 32px; height: 28px; padding: 0; }
+  .mode-toggle { display: flex; gap: 10px; }
+  .mode-toggle label { cursor: help; }
   .row { display: flex; gap: 8px; margin-bottom: 16px; }
   input[type="text"] {
     flex: 1;
@@ -128,6 +130,14 @@
         <option value="N1">N1 (advanced)</option>
       </select>
     </label>
+    <span class="mode-toggle">
+      <label title="Forces the model to return valid JSON matching the exact card schema. More reliable, can be slower.">
+        <input type="radio" name="genMode" value="structured" checked> Structured
+      </label>
+      <label title="Asks the model for plain labeled text, parsed afterward. Potentially faster, but parsing can fail if the model drifts from the format.">
+        <input type="radio" name="genMode" value="plain"> Plain text
+      </label>
+    </span>
   </div>
 
   <div class="row">

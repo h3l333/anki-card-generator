@@ -198,10 +198,14 @@ generateBtn.addEventListener("click", async () => {
 		const response = await fetch(`${BACKEND_URL}/generate`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ word, level: levelPicker.value }),
+			body: JSON.stringify({
+				word,
+				level: levelPicker.value,
+				mode: document.querySelector('input[name="genMode"]:checked').value,
+			}),
 		});
 		// Matches GenerateRequest's shape in backend/models.py: `word` plus which JLPT
-		// level to cater the generated Japanese to.
+		// level to cater the generated Japanese to, plus which generation mode to use.
 
 		if (!response.ok) {
 			throw new Error("bad-response");
@@ -543,7 +547,11 @@ batchGenerateBtn.addEventListener("click", () => {
 			const response = await fetch(`${BACKEND_URL}/generate/batch`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ file_content: reader.result, level: levelPicker.value }),
+				body: JSON.stringify({
+					file_content: reader.result,
+					level: levelPicker.value,
+					mode: document.querySelector('input[name="genMode"]:checked').value,
+				}),
 			});
 
 			if (!response.ok) {
