@@ -4,18 +4,32 @@ from unittest.mock import ANY, patch
 
 from backend.anki import AnkiConnectError
 from backend.batch import BatchValidationError
-from backend.llm import JLPT_LEVEL_DEFAULT, LLMError
+from backend.llm import JLPT_LEVEL_DEFAULT
 from backend.models import BatchCardResult, CardDraft
 
 # test_main.py doesn't re-test the LLM or Anki logic itself (that's already covered by
 # test_llm.py and test_anki.py)- instead it checks that each route in backend/main.py wires
 # things together correctly: calling the right backend function, and mapping each custom
-# exception type to the right HTTP status code (LLMError -> 502, BatchValidationError -> 400,
-# AnkiConnectError -> 503). Every test below patches the relevant function as imported into
-# backend/main.py's own namespace (e.g. "backend.main.generate_card", not
-# "backend.llm.generate_card")- main.py does `from backend.llm import generate_card`, which
-# creates a separate reference inside backend.main's namespace, and that's the reference the
-# route handler's unqualified `generate_card(...)` call actually looks up.
+# exception type to the right HTTP status code (BatchValidationError -> 400, AnkiConnectError
+# -> 503). /generate no longer maps a generation failure to an HTTP status at all- both it and
+# /generate/batch stream newline-delimited JSON event lines (see backend/main.py's
+# _stream_generate_result/_stream_batch_results), so a failed generation surfaces as an
+# in-band {"event": "error", ...}/BatchCardResult(error=...) line instead, since the HTTP
+# status is already committed to 200 by the time either StreamingResponse starts sending
+# bytes. Every test below patches the relevant function as imported into backend/main.py's
+# own namespace (e.g. "backend.main.generate_card_with_events", not
+# "backend.llm.generate_card_with_events")- main.py does
+# `from backend.llm import generate_card_with_events`, which creates a separate reference
+# inside backend.main's namespace, and that's the reference the route handler's unqualified
+# call actually looks up.
+
+
+def _read_generate_stream(response):
+    # POST /generate streams newline-delimited JSON event lines (see backend/main.py's
+    # _stream_generate_result), not one JSON document- response.json() doesn't work here.
+    # Returns every parsed event line in order; tests typically only care about the last one
+    # (the terminal "result"/"error" event).
+    return [json.loads(line) for line in response.text.strip().split("\n")]
 
 
 def _read_batch_stream(response):
@@ -23,10 +37,12 @@ def _read_batch_stream(response):
     # (see backend/main.py::_stream_batch_results), so response.json() doesn't work here-
     # TestClient still buffers the whole streamed body into response.text before this
     # function runs, it just isn't valid as a single json.loads() call. The first line is
-    # always {"total": N}; every line after that carries one word's BatchCardResult.
+    # always {"total": N}; every line after that carries one word's BatchCardResult (progress
+    # heartbeat/retry lines, if any, are filtered out- see test_generate_batch_route_streams_
+    # progress_events below for a test that specifically checks those).
     lines = [json.loads(line) for line in response.text.strip().split("\n")]
     total = lines[0]["total"]
-    results = [line["result"] for line in lines[1:]]
+    results = [line["result"] for line in lines[1:] if "result" in line]
     return total, results
 
 
@@ -34,13 +50,18 @@ def test_generate_route_returns_card(client, sample_card_json):
     card = CardDraft(**sample_card_json)
     with (
         patch("backend.main.find_word_by_kanji", return_value=None),
-        patch("backend.main.generate_card", return_value=card),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ),
         patch("backend.main.insert_word", return_value=1),
         patch("backend.main.insert_card") as mock_insert_card,
     ):
         response = client.post("/generate", json={"word": "大人"})
     assert response.status_code == 200
-    body = response.json()
+    events = _read_generate_stream(response)
+    body = events[-1]
+    assert body["event"] == "result"
     assert body["word_id"] == 1
     assert body["duplicate"] is False
     assert body["card"]["expression"] == "大人"
@@ -52,6 +73,11 @@ def test_generate_route_returns_card(client, sample_card_json):
     # insert_card are mocked too so this test never touches a real database- it's only
     # checking that the route calls the right functions and shapes the response correctly,
     # the same scope test_db.py-style DB tests would leave to their own file instead.
+    # generate_card_with_events is mocked to return a plain list of one terminal "result"
+    # event rather than actually running the background-thread/queue machinery in
+    # backend/llm.py (covered separately by test_llm.py)- the route just iterates whatever
+    # it's handed with a plain `for event in ...`, so a list works fine here without needing
+    # iter()/next() the way _stream_batch_results' generate_cards_batch mocking does.
 
 
 def test_generate_route_returns_existing_card_without_calling_llm(
@@ -69,49 +95,63 @@ def test_generate_route_returns_existing_card_without_calling_llm(
     with (
         patch("backend.main.find_word_by_kanji", return_value=existing_word),
         patch("backend.main.get_card", return_value=existing_card),
-        patch("backend.main.generate_card") as mock_generate_card,
+        patch("backend.main.generate_card_with_events") as mock_generate,
     ):
         response = client.post("/generate", json={"word": "大人"})
     assert response.status_code == 200
-    body = response.json()
+    events = _read_generate_stream(response)
+    assert len(events) == 1
+    body = events[0]
     assert body["word_id"] == 7
     assert body["duplicate"] is True
     assert body["card"]["expression"] == "大人"
-    mock_generate_card.assert_not_called()
+    mock_generate.assert_not_called()
     # The duplicate-check branch: find_word_by_kanji returning something means the word's
     # already in Postgres, so the route must build its response from that (via get_card)
-    # without ever calling generate_card- this is the token-saving short-circuit the whole
-    # DB-lookup-before-generation change exists for, so it's worth asserting on directly
-    # rather than just checking the response body. SimpleNamespace stands in for the real
+    # without ever calling generate_card_with_events- this is the token-saving short-circuit
+    # the whole DB-lookup-before-generation change exists for, so it's worth asserting on
+    # directly rather than just checking the response body. It's also why this is the one
+    # /generate case that's still exactly one line, not a heartbeat/result stream- there's no
+    # OpenRouter call to report progress on. SimpleNamespace stands in for the real
     # SQLAlchemy Word/Card rows here since the route only reads plain attributes off them.
 
 
-def test_generate_route_maps_llm_error_to_502(client):
+def test_generate_route_reports_llm_error_as_event(client):
     with (
         patch("backend.main.find_word_by_kanji", return_value=None),
-        patch("backend.main.generate_card", side_effect=LLMError("boom")),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "error", "detail": "boom"}],
+        ),
     ):
         response = client.post("/generate", json={"word": "大人"})
-    assert response.status_code == 502
-    assert response.json()["detail"] == "boom"
-    # backend/main.py's generate() route catches LLMError specifically and re-raises it as
-    # HTTPException(status_code=502, detail=str(exc))- this checks that mapping directly.
-    # find_word_by_kanji is mocked to return None so the route actually reaches generate_card
-    # in the first place, same reasoning as test_generate_route_returns_card above.
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    assert events[-1] == {"event": "error", "detail": "boom"}
+    # A generation failure used to map to HTTPException(502)- now that /generate is a
+    # StreamingResponse, the HTTP status is already committed to 200 by the time any bytes
+    # go out, so a failure (LLMError or otherwise- see backend/llm.py's
+    # generate_card_with_events) instead becomes the stream's terminal
+    # {"event": "error", "detail": ...} line. find_word_by_kanji is mocked to return None so
+    # the route actually reaches generate_card_with_events in the first place, same
+    # reasoning as test_generate_route_returns_card above.
 
 
 def test_generate_route_uses_requested_level(client, sample_card_json):
     card = CardDraft(**sample_card_json)
     with (
         patch("backend.main.find_word_by_kanji", return_value=None) as mock_find,
-        patch("backend.main.generate_card", return_value=card) as mock_generate_card,
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ) as mock_generate,
         patch("backend.main.insert_word", return_value=1) as mock_insert_word,
         patch("backend.main.insert_card"),
     ):
         response = client.post("/generate", json={"word": "大人", "level": "N1"})
     assert response.status_code == 200
     mock_find.assert_called_once_with("大人", level="N1")
-    mock_generate_card.assert_called_once_with("大人", level="N1")
+    mock_generate.assert_called_once_with("大人", "N1", mode="structured")
     mock_insert_word.assert_called_once_with(
         kanji="大人", reading=card.reading, source="manual", level="N1"
     )
@@ -123,16 +163,82 @@ def test_generate_route_falls_back_to_default_level(client, sample_card_json):
     card = CardDraft(**sample_card_json)
     with (
         patch("backend.main.find_word_by_kanji", return_value=None) as mock_find,
-        patch("backend.main.generate_card", return_value=card) as mock_generate_card,
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ) as mock_generate,
         patch("backend.main.insert_word", return_value=1),
         patch("backend.main.insert_card"),
     ):
         response = client.post("/generate", json={"word": "大人"})
     assert response.status_code == 200
     mock_find.assert_called_once_with("大人", level=JLPT_LEVEL_DEFAULT)
-    mock_generate_card.assert_called_once_with("大人", level=JLPT_LEVEL_DEFAULT)
+    mock_generate.assert_called_once_with("大人", JLPT_LEVEL_DEFAULT, mode="structured")
     # GenerateRequest.level is optional (backend/models.py)- omitting it entirely should
     # fall back to backend/llm.py's JLPT_LEVEL_DEFAULT, same as an unset OPENROUTER_MODELS.
+
+
+def test_generate_route_uses_plain_mode(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ) as mock_generate,
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post("/generate", json={"word": "大人", "mode": "plain"})
+    assert response.status_code == 200
+    mock_generate.assert_called_once_with("大人", JLPT_LEVEL_DEFAULT, mode="plain")
+    # Confirms GenerateRequest.mode actually reaches generate_card_with_events (which itself
+    # picks generate_card_plain vs. generate_card inside backend/llm.py- see
+    # test_llm.py for that branch), not just accepted/ignored at the route layer.
+
+
+def test_generate_route_defaults_to_structured_mode(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ) as mock_generate,
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post("/generate", json={"word": "大人"})
+    assert response.status_code == 200
+    mock_generate.assert_called_once_with("大人", JLPT_LEVEL_DEFAULT, mode="structured")
+    # No "mode" in the request body at all- GenerateRequest.mode's own default
+    # ("structured") should be what the route acts on.
+
+
+def test_generate_route_duplicate_ignores_mode(client, sample_card_json):
+    existing_word = SimpleNamespace(id=7, kanji="大人", reading=sample_card_json["reading"])
+    existing_card = SimpleNamespace(
+        definition_ja=sample_card_json["definition_ja"],
+        nuance=sample_card_json["nuance"],
+        synonyms=sample_card_json["synonyms"],
+        antonyms=sample_card_json["antonyms"],
+        example_sentence=sample_card_json["example_sentence"],
+        jlpt_level=sample_card_json["jlpt_level"],
+    )
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=existing_word),
+        patch("backend.main.get_card", return_value=existing_card),
+        patch("backend.main.generate_card_with_events") as mock_generate,
+    ):
+        response = client.post("/generate", json={"word": "大人", "mode": "plain"})
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    assert events[0]["duplicate"] is True
+    mock_generate.assert_not_called()
+    # The Postgres duplicate-check cache is deliberately mode-agnostic (see backend/db.py
+    # and backend/main.py's generate() route)- a cached Card row is reused regardless of
+    # which mode the current request asked for, so generate_card_with_events should never
+    # be called here.
 
 
 def test_generate_batch_route_returns_results(client, sample_card_json):
@@ -207,7 +313,9 @@ def test_generate_batch_route_skips_llm_for_duplicate_word(client, sample_card_j
     assert generated_result["duplicate"] is False
     assert generated_result["word_id"] == 9
 
-    mock_generate_cards_batch.assert_called_once_with(["新語"], level=JLPT_LEVEL_DEFAULT)
+    mock_generate_cards_batch.assert_called_once_with(
+        ["新語"], level=JLPT_LEVEL_DEFAULT, mode="structured"
+    )
     mock_insert_word.assert_called_once_with(
         kanji="新語", reading=card.reading, source="batch", level=JLPT_LEVEL_DEFAULT
     )
@@ -273,6 +381,35 @@ def test_generate_batch_route_streams_progress_counts(client, sample_card_json):
     # N separately from the first line it read.
 
 
+def test_generate_batch_route_passes_through_progress_events(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    generated = [
+        {"event": "heartbeat", "elapsed_s": 2.5, "word": "大人", "index": 0},
+        {"event": "retry", "elapsed_s": 5.0, "word": "大人", "index": 0},
+        BatchCardResult(word="大人", card=card),
+    ]
+    with (
+        patch("backend.main.parse_and_validate", return_value=["大人"]),
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch("backend.main.generate_cards_batch", return_value=generated),
+        patch("backend.main.insert_word", return_value=9),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post("/generate/batch", json={"file_content": "大人"})
+    assert response.status_code == 200
+    lines = [json.loads(line) for line in response.text.strip().split("\n")]
+    progress_lines = [line for line in lines if "event" in line]
+    assert progress_lines == generated[:2]
+    # The two progress dicts generate_cards_batch yields ahead of the terminal
+    # BatchCardResult (see backend/llm.py) must reach the client as their own NDJSON
+    # lines, unmodified, before the word's usual {"completed", "total", "result"} line-
+    # this is what lets the frontend show "still waiting"/"retrying" for a word that's
+    # still mid-generation instead of a silent gap between "X/N done" updates.
+    result_lines = [line for line in lines if "result" in line]
+    assert len(result_lines) == 1
+    assert result_lines[0]["result"]["word"] == "大人"
+
+
 def test_generate_batch_route_skips_persistence_for_failed_words(client):
     results = [BatchCardResult(word="大人", error="boom")]
     with (
@@ -293,6 +430,30 @@ def test_generate_batch_route_skips_persistence_for_failed_words(client):
     # calling insert_word/insert_card with a None card's attributes. find_word_by_kanji is
     # mocked to return None so the route's per-word duplicate check reaches
     # generate_cards_batch for this word instead of hitting a real Postgres lookup.
+
+
+def test_generate_batch_route_threads_mode_to_batch(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    results = [BatchCardResult(word="大人", card=card)]
+    with (
+        patch("backend.main.parse_and_validate", return_value=["大人"]),
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_cards_batch", return_value=results
+        ) as mock_generate_cards_batch,
+        patch("backend.main.insert_word", return_value=9),
+        patch("backend.main.insert_card"),
+    ):
+        response = client.post(
+            "/generate/batch", json={"file_content": "大人", "mode": "plain"}
+        )
+    assert response.status_code == 200
+    mock_generate_cards_batch.assert_called_once_with(
+        ["大人"], level=JLPT_LEVEL_DEFAULT, mode="plain"
+    )
+    # Confirms BatchGenerateRequest.mode actually reaches generate_cards_batch (via
+    # _stream_batch_results' new `mode` parameter in backend/main.py), not just accepted
+    # and dropped.
 
 
 def test_generate_batch_route_maps_validation_error_to_400(client):
