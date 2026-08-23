@@ -15,16 +15,27 @@ JlptLevel = Literal["N5", "N4", "N3", "N2", "N1"]
 # (kanji, level) duplicate-check key (backend/db.py), or get interpolated as-is into the
 # Japanese prompt backend/llm.py sends to OpenRouter.
 
+GenMode = Literal["structured", "plain"]
+# Shared by GenerateRequest/BatchGenerateRequest below- constrains `mode` to the two
+# generation paths backend/llm.py implements (generate_card/generate_card_plain), same
+# reasoning as JlptLevel above: keeps a typo'd/invalid mode from silently reaching
+# backend/main.py's `request.mode == "plain"` check as an always-false comparison.
+
 
 class GenerateRequest(BaseModel):
     word: str
     level: JlptLevel | None = None
+    mode: GenMode = "structured"
 # The request body shape for POST /generate (backend/main.py)- the word the user typed into
 # the frontend's word input box, plus which JLPT level to cater definition_ja/nuance/
 # example_sentence's language to. `level` is optional- an unset value falls back to
 # backend/llm.py's JLPT_LEVEL_DEFAULT in the route (see backend/main.py's generate()), same
 # pattern as OPENROUTER_MODELS' env-var-with-default. Not to be confused with CardDraft.
 # jlpt_level below, which is the model's own estimate of the target *word's* difficulty.
+# `mode` defaults to "structured" directly (unlike `level`, it has no env-var fallback to
+# resolve- both valid values are already known at this layer), so a request that omits it
+# entirely (e.g. an old cached frontend build) still validates and behaves exactly as
+# before this field existed.
 
 
 class CardDraft(BaseModel):
@@ -58,12 +69,16 @@ class GenerateResponse(BaseModel):
     word_id: int
     duplicate: bool
     card: CardDraft
-# The response body for POST /generate. `word_id` is new here- the frontend needs to carry
-# it through to POST /export later, so the export route knows which word's export history
-# to check (see backend/db.py's get_latest_export). `duplicate` tells the frontend whether
-# `card` is a fresh LLM result or the existing pristine record already in Postgres for this
-# word (see backend/main.py's generate() route and ARCHITECTURE.md)- either way `card` is
-# populated, so the frontend never needs a second round-trip just to see what's on file.
+# POST /generate now streams newline-delimited JSON event lines rather than returning one
+# document of this shape directly (see backend/main.py's generate()/_stream_generate_result)-
+# this class documents the payload of that stream's terminal {"event": "result", ...} line
+# (word_id/duplicate/card, same fields as here) rather than a literal HTTP response body.
+# `word_id` is what lets the frontend carry a generated word through to POST /export later,
+# so the export route knows which word's export history to check (see backend/db.py's
+# get_latest_export). `duplicate` tells the frontend whether `card` is a fresh LLM result or
+# the existing pristine record already in Postgres for this word (see ARCHITECTURE.md)-
+# either way `card` is populated, so the frontend never needs a second round-trip just to
+# see what's on file.
 
 
 class ExportRequest(BaseModel):
@@ -101,11 +116,13 @@ class ExportRequest(BaseModel):
 class BatchGenerateRequest(BaseModel):
     file_content: str
     level: JlptLevel | None = None
+    mode: GenMode = "structured"
 # The request body shape for POST /generate/batch- the raw text contents of the uploaded
 # .txt file, read client-side via FileReader in frontend/index.js and sent as a plain string
 # rather than a file upload, so backend/batch.py never has to deal with multipart form data.
 # `level` applies to every word in the batch (there's no per-line level in the .txt format)-
-# same optional/default-fallback behavior as GenerateRequest.level above.
+# same optional/default-fallback behavior as GenerateRequest.level above. `mode` likewise
+# applies to every word in the batch- same reasoning and default as GenerateRequest.mode.
 
 
 class BatchCardResult(BaseModel):
