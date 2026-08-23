@@ -11,6 +11,9 @@ const BACKEND_URL = "http://localhost:5000";
 const wordInput = document.getElementById("wordInput");
 const generateBtn = document.getElementById("generateBtn");
 const statusBox = document.getElementById("statusBox");
+const generateProgress = document.getElementById("generateProgress");
+const generateStage = document.getElementById("generateStage");
+const generateElapsed = document.getElementById("generateElapsed");
 const cardBox = document.getElementById("cardBox");
 const exportBtn = document.getElementById("exportBtn");
 const rejectBtn = document.getElementById("rejectBtn");
@@ -59,6 +62,45 @@ function showStatus(message, type) {
 function clearStatus() {
 	statusBox.textContent = "";
 	statusBox.className = "status";
+}
+
+// Reads a streamed NDJSON response body (backend/main.py's /generate and
+// /generate/batch both return `media_type="application/x-ndjson"`) incrementally,
+// calling `onLine` with each parsed JSON object as soon as its line is complete-
+// rather than waiting for the whole response like `response.json()` would, which is
+// the whole point: it lets progress lines (heartbeat/retry) update the UI before the
+// terminal result line ever arrives.
+async function readNdjsonLines(response, onLine) {
+	const bodyReader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	while (true) {
+		const { done, value } = await bodyReader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		// { stream: true } tells TextDecoder a multi-byte UTF-8 character (e.g. any
+		// kanji/kana in a word or card field) might be split across this chunk and the
+		// next one, and to hold the split bytes over instead of decoding them as
+		// garbage now.
+
+		let newlineIndex;
+		while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+			const line = buffer.slice(0, newlineIndex);
+			buffer = buffer.slice(newlineIndex + 1);
+			if (line) onLine(JSON.parse(line));
+		}
+	}
+}
+
+// Shared stage text for a heartbeat/retry progress event (backend/llm.py's
+// generate_card_with_events)- `hasRetried` is tracked by the caller so the message
+// stays on "Retrying..." for every heartbeat after the retry fires, not just the one
+// event where it happens.
+function progressStageText(event, hasRetried) {
+	if (event.event === "retry" || hasRetried) {
+		return "Retrying- model returned an unexpected word...";
+	}
+	return "Waiting for model...";
 }
 
 // Derives the "info" status box's colors (index.html's .status.info, driven by the
@@ -194,6 +236,19 @@ generateBtn.addEventListener("click", async () => {
 	// (catch block) once the response actually comes back- this is just a heads-up for
 	// the wait itself, matching ROADMAP.md's previously-proposed slow-generation warning.
 
+	const requestStart = Date.now();
+	let hasRetried = false;
+	generateProgress.classList.remove("visible");
+	generateStage.textContent = "Waiting for model...";
+	generateElapsed.textContent = "0s";
+	const elapsedTicker = setInterval(() => {
+		generateElapsed.textContent = `${Math.floor((Date.now() - requestStart) / 1000)}s`;
+	}, 1000);
+	// Ticks the elapsed-time display locally every second- driven by wall-clock time
+	// rather than waiting on the next heartbeat event, so the number keeps moving
+	// smoothly between the ~2.5s server-pushed heartbeats (see backend/llm.py's
+	// HEARTBEAT_INTERVAL_S).
+
 	try {
 		const response = await fetch(`${BACKEND_URL}/generate`, {
 			method: "POST",
@@ -211,74 +266,106 @@ generateBtn.addEventListener("click", async () => {
 			throw new Error("bad-response");
 		}
 		// fetch() only rejects on a genuine network failure (e.g. the backend isn't
-		// running at all)- an HTTP error status like 502 still resolves normally, so
-		// response.ok (true only for 2xx statuses) has to be checked explicitly and
-		// turned into a thrown error to be caught by the catch block below.
+		// running at all)- a non-2xx status still resolves normally, so response.ok
+		// (true only for 2xx statuses) has to be checked explicitly and turned into a
+		// thrown error to be caught by the catch block below. backend/main.py's
+		// /generate route always responds 200 now (even on an LLM failure- see the
+		// "error" event handled below), so this only fires on a genuine backend-side
+		// crash before any streaming starts.
 
-		const data = await response.json();
-		// backend/main.py's /generate route now returns GenerateResponse (backend/models.py):
-		// {word_id, duplicate, card}, not a bare CardDraft- data.card is where the eight
-		// generated fields actually live now, one level deeper than before. word_id and
-		// duplicate aren't consumed here yet- they're threaded through the review form once
-		// /export is wired up to use them (see ROADMAP.md).
-		const card = data.card;
-		currentWordId = data.word_id;
-		// Captured here, before anything else touches `data`- this is the one place the
-		// backend ever tells the frontend which word this card is (see GenerateResponse
-		// in backend/models.py). exportBtn's handler below reads currentWordId when the
-		// user eventually clicks Export, whether or not they edited any fields first.
-		// This is the field-name bridge in action: the keys on the right (card.expression,
-		// card.reading, card.definition_ja, ...) are CardDraft's field names exactly as
-		// backend/main.py's /generate route returns them, while the `fields.*` targets on
-		// the left are this project's ExportRequest-shaped form fields (see the `fields`
-		// object above)- definition_ja becomes fields.definition, example_sentence becomes
-		// fields.example, jlpt_level becomes fields.jlpt. synonyms/antonyms are named the
-		// same on both sides, so those two just pass straight through.
-		fields.expression.value = card.expression ?? word;
-		fields.reading.value = card.reading ?? "";
-		fields.definition.value = card.definition_ja ?? "";
-		fields.nuance.value = card.nuance ?? "";
-		fields.synonyms.value = card.synonyms ?? "";
-		fields.antonyms.value = card.antonyms ?? "";
-		fields.example.value = card.example_sentence ?? "";
-		fields.jlpt.value = card.jlpt_level ?? "";
-		// `??` is the nullish-coalescing operator- it falls back to the right-hand value
-		// only when the left side is specifically null or undefined (unlike `||`, which
-		// would also fall back on an empty string or 0). `card.expression ?? word` falls
-		// back to the word the user actually typed if the backend response is somehow
-		// missing that field; the rest fall back to an empty string so a missing field
-		// shows a blank, editable box instead of the literal text "undefined".
+		let sawTerminalEvent = false;
+		await readNdjsonLines(response, (event) => {
+			// backend/main.py's /generate route now streams NDJSON event lines
+			// (backend/llm.py's generate_card_with_events) instead of one JSON body-
+			// see the event schema in backend/main.py's _stream_generate_result.
+			if (event.event === "heartbeat" || event.event === "retry") {
+				if (event.event === "retry") hasRetried = true;
+				generateProgress.classList.add("visible");
+				generateStage.textContent = progressStageText(event, hasRetried);
+				return;
+			}
 
-		if (data.duplicate) {
-			showStatus(
-				"This word already has a saved card- showing the existing one.",
-				"info",
-			);
+			if (event.event === "error") {
+				sawTerminalEvent = true;
+				showStatus(event.detail, "error");
+				// Surfaces the actual LLMError text now that a generation failure is an
+				// in-band event rather than an HTTP 502- more specific than the generic
+				// catch-block message below, matching how the batch flow already
+				// surfaces backend-provided error detail.
+				return;
+			}
+
+			// event.event === "result"
+			sawTerminalEvent = true;
+			const card = event.card;
+			currentWordId = event.word_id;
+			// Captured here, before anything else touches `event`- this is the one place
+			// the backend ever tells the frontend which word this card is (see the
+			// "result" event's schema in backend/main.py). exportBtn's handler below
+			// reads currentWordId when the user eventually clicks Export, whether or not
+			// they edited any fields first. This is the field-name bridge in action: the
+			// keys on the right (card.expression, card.reading, card.definition_ja, ...)
+			// are CardDraft's field names exactly as the "result" event carries them,
+			// while the `fields.*` targets on the left are this project's
+			// ExportRequest-shaped form fields (see the `fields` object above)-
+			// definition_ja becomes fields.definition, example_sentence becomes
+			// fields.example, jlpt_level becomes fields.jlpt. synonyms/antonyms are
+			// named the same on both sides, so those two just pass straight through.
+			fields.expression.value = card.expression ?? word;
+			fields.reading.value = card.reading ?? "";
+			fields.definition.value = card.definition_ja ?? "";
+			fields.nuance.value = card.nuance ?? "";
+			fields.synonyms.value = card.synonyms ?? "";
+			fields.antonyms.value = card.antonyms ?? "";
+			fields.example.value = card.example_sentence ?? "";
+			fields.jlpt.value = card.jlpt_level ?? "";
+			// `??` is the nullish-coalescing operator- it falls back to the right-hand value
+			// only when the left side is specifically null or undefined (unlike `||`, which
+			// would also fall back on an empty string or 0). `card.expression ?? word` falls
+			// back to the word the user actually typed if the backend response is somehow
+			// missing that field; the rest fall back to an empty string so a missing field
+			// shows a blank, editable box instead of the literal text "undefined".
+
+			if (event.duplicate) {
+				showStatus(
+					"This word already has a saved card- showing the existing one.",
+					"info",
+				);
+			}
+			// A minimal, non-blocking heads-up for now: duplicate=true means these fields came
+			// from Postgres rather than a fresh OpenRouter call (see backend/main.py). The
+			// fuller cancel-vs-edit decision flow described in ARCHITECTURE.md is a separate,
+			// not-yet-built step- this just stops the duplicate case from looking identical to
+			// a freshly generated card with no indication anything different happened.
+
+			cardBox.classList.add("visible");
+			// .card.visible is what actually makes this box render at all- see index.html's
+			// <style>, where plain .card has `display: none`.
+		});
+		if (!sawTerminalEvent) {
+			// The stream ended (e.g. the backend crashed mid-response) without ever
+			// sending a terminal "result" or "error" line- treat that the same as the
+			// generic network-failure message below, since nothing more specific is
+			// known about what went wrong.
+			throw new Error("bad-response");
 		}
-		// A minimal, non-blocking heads-up for now: duplicate=true means these fields came
-		// from Postgres rather than a fresh OpenRouter call (see backend/main.py). The
-		// fuller cancel-vs-edit decision flow described in ARCHITECTURE.md is a separate,
-		// not-yet-built step- this just stops the duplicate case from looking identical to
-		// a freshly generated card with no indication anything different happened.
-
-		cardBox.classList.add("visible");
-		// .card.visible is what actually makes this box render at all- see index.html's
-		// <style>, where plain .card has `display: none`.
 	} catch (err) {
 		// Mirrors the LLM parsing/backend failure messaging described in PROJECT.md.
+		// This can no longer mean "the LLM call itself failed"- that's now the in-band
+		// "error" event handled above- so this generic message is reserved for genuine
+		// network/connectivity failures.
 		showStatus(
 			"Failed to reach the backend or parse its response. Is the Python service running?",
 			"error",
 		);
-		// One single generic message regardless of what actually went wrong (network
-		// failure, non-2xx status, malformed JSON body)- unlike the batch upload flow
-		// further down, which does surface the backend's specific error detail.
 	} finally {
 		generateBtn.disabled = false;
 		generateBtn.textContent = "Generate";
 		// `finally` runs whether the try block succeeded or the catch block ran- this is
 		// what re-enables the button either way, so a failed request doesn't leave it
 		// stuck disabled.
+		clearInterval(elapsedTicker);
+		generateProgress.classList.remove("visible");
 	}
 });
 
@@ -336,6 +423,9 @@ exportBtn.addEventListener("click", async () => {
 const fileInput = document.getElementById("fileInput");
 const batchGenerateBtn = document.getElementById("batchGenerateBtn");
 const batchStatusBox = document.getElementById("batchStatusBox");
+const batchProgress = document.getElementById("batchProgress");
+const batchStage = document.getElementById("batchStage");
+const batchElapsed = document.getElementById("batchElapsed");
 const carousel = document.getElementById("carousel");
 
 function showBatchStatus(message, type) {
@@ -571,54 +661,59 @@ batchGenerateBtn.addEventListener("click", () => {
 				// detail message to show.
 			}
 
-			const bodyReader = response.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = "";
 			let total = null;
-			let completed = 0;
-			// response.body is a ReadableStream of raw bytes- getReader()/TextDecoder
-			// turn that into decoded text incrementally as chunks arrive over the wire,
-			// rather than waiting for the whole response like response.json() would.
-			// `buffer` holds text read so far that hasn't formed a complete "\n"-
-			// terminated line yet, since a single chunk boundary has no relationship to
-			// where backend/main.py's _stream_batch_results happened to end a line.
+			let progressIndex = null;
+			let hasRetried = false;
+			// response.body is a ReadableStream of raw bytes- readNdjsonLines()
+			// decodes/splits it into complete lines incrementally as they arrive over
+			// the wire, rather than waiting for the whole response like response.json()
+			// would. progressIndex/hasRetried track which word a heartbeat/retry event
+			// belongs to, so the "Retrying..." stage text resets when generation moves
+			// on to the next word.
 
-			while (true) {
-				const { done, value } = await bodyReader.read();
-				if (done) break;
-				buffer += decoder.decode(value, { stream: true });
-				// { stream: true } tells TextDecoder a multi-byte UTF-8 character (e.g.
-				// any kanji/kana in a word or card field) might be split across this
-				// chunk and the next one, and to hold the split bytes over instead of
-				// decoding them as garbage now.
-
-				let newlineIndex;
-				while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-					const line = buffer.slice(0, newlineIndex);
-					buffer = buffer.slice(newlineIndex + 1);
-					if (!line) continue;
-					const event = JSON.parse(line);
-
-					if (!("result" in event)) {
-						// The leading {"total": N} line (see backend/main.py)- always
-						// the first line, but checked by shape rather than position so
-						// this loop doesn't have to track "is this the first line?"
-						// separately.
-						total = event.total;
-						showBatchStatus(`Generating... 0/${total} done.`, "info");
-						continue;
+			await readNdjsonLines(response, (event) => {
+				if ("event" in event) {
+					// A heartbeat/retry tick for a still-in-flight word (see
+					// backend/llm.py's generate_card_with_events, merged with
+					// word/index in backend/main.py's _stream_batch_results)- doesn't
+					// carry "result" or a bare "total", so it has to be checked before
+					// either of those shape checks below.
+					if (event.index !== progressIndex) {
+						progressIndex = event.index;
+						hasRetried = false;
 					}
-
-					total = event.total;
-					completed = event.completed;
-					carousel.appendChild(buildCarouselCard(event.result));
-					showBatchStatus(
-						`Generating... ${completed}/${total} done. Each word can take up ` +
-							"to a few minutes- see README Troubleshooting if it seems stuck.",
-						"info",
-					);
+					if (event.event === "retry") hasRetried = true;
+					batchProgress.classList.add("visible");
+					batchStage.textContent =
+						`"${event.word}" (${event.index + 1}/${total ?? "?"}) - ` +
+						progressStageText(event, hasRetried);
+					batchElapsed.textContent = `${event.elapsed_s}s`;
+					return;
 				}
-			}
+
+				if (!("result" in event)) {
+					// The leading {"total": N} line (see backend/main.py)- always the
+					// first line, but checked by shape rather than position so this
+					// loop doesn't have to track "is this the first line?" separately.
+					total = event.total;
+					showBatchStatus(`Generating... 0/${total} done.`, "info");
+					return;
+				}
+
+				const completed = event.completed;
+				total = event.total;
+				carousel.appendChild(buildCarouselCard(event.result));
+				showBatchStatus(
+					`Generating... ${completed}/${total} done. Each word can take up ` +
+						"to a few minutes- see README Troubleshooting if it seems stuck.",
+					"info",
+				);
+				batchProgress.classList.remove("visible");
+				// This word is done (whether it succeeded or failed)- hide the
+				// per-word progress bar until the next word's first heartbeat/retry
+				// tick shows it again (skipped entirely for a Postgres duplicate,
+				// which resolves with no LLM call at all).
+			});
 			// One buildCarouselCard() call, and one appended card, per word in the
 			// original uploaded file, in the same order- backend/main.py's
 			// _stream_batch_results streams results in file order even though a
@@ -640,6 +735,7 @@ batchGenerateBtn.addEventListener("click", () => {
 		} finally {
 			batchGenerateBtn.disabled = false;
 			batchGenerateBtn.textContent = "Generate from File";
+			batchProgress.classList.remove("visible");
 		}
 	};
 	reader.readAsText(file);

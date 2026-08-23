@@ -60,6 +60,36 @@
   }
   .status.error { background: #fdecea; color: #b3261e; display: block; }
   .status.info { background: var(--info-bg); color: var(--info-text); display: block; }
+  .progress-wrap { display: none; margin: -8px 0 16px; }
+  .progress-wrap.visible { display: block; }
+  .progress-bar {
+    position: relative;
+    height: 6px;
+    border-radius: 3px;
+    background: #e0e0e0;
+    overflow: hidden;
+  }
+  .progress-bar .fill {
+    position: absolute;
+    top: 0;
+    left: -35%;
+    height: 100%;
+    width: 35%;
+    background: var(--accent);
+    border-radius: 3px;
+    animation: progress-indeterminate 1.4s ease-in-out infinite;
+  }
+  @keyframes progress-indeterminate {
+    0% { left: -35%; }
+    100% { left: 100%; }
+  }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: #666;
+    margin-top: 4px;
+  }
   .card {
     background: white;
     border: 1px solid #ddd;
@@ -147,6 +177,14 @@
 
   <div id="statusBox" class="status"></div>
 
+  <div id="generateProgress" class="progress-wrap">
+    <div class="progress-bar"><div class="fill"></div></div>
+    <div class="progress-meta">
+      <span id="generateStage">Waiting for model...</span>
+      <span id="generateElapsed">0s</span>
+    </div>
+  </div>
+
   <div id="cardBox" class="card">
     <div class="field">
       <label for="f-expression">Expression</label>
@@ -196,6 +234,14 @@
   </div>
 
   <div id="batchStatusBox" class="status"></div>
+
+  <div id="batchProgress" class="progress-wrap">
+    <div class="progress-bar"><div class="fill"></div></div>
+    <div class="progress-meta">
+      <span id="batchStage">Waiting for model...</span>
+      <span id="batchElapsed">0s</span>
+    </div>
+  </div>
 
   <div id="carousel" class="carousel"></div>
 
