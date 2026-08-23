@@ -24,17 +24,20 @@ solely on the LLM.
   goes ahead. The scope here is parsing Yomitan's dictionary file format as a
   data source, not hooking into the Yomitan browser extension itself.
 
-### Plain-text generation mode
-
-Offer a second generation mode alongside the current structured-output flow: a plain-text prompt (no `response_format`/`json_schema`) that asks the model for a freeform definition instead of the current eight discrete fields, aimed at users who want faster turnaround and are willing to trade away structure for it.
-
-- Motivated by README.md's Troubleshooting section, which already documents that dropping `response_format` from an OpenRouter request is faster than structured output- the `json_schema` requirement itself adds generation overhead, independent of model or network conditions.
-- Proposed approach: a second prompt template and a new `llm.py` function (e.g. `generate_card_plain`) that sends a plain chat request with no `response_format`, returning freeform text rather than a `CardDraft`. Surfaced via either a mode toggle on `/generate` or a separate endpoint- not yet decided which.
-- **Tradeoff:** without `response_format: json_schema` enforcing shape, there's no guarantee the response can be split into the current eight fields (`expression`, `reading`, `definition_ja`, `nuance`, `synonyms`, `antonyms`, `example_sentence`, `jlpt_level`)- likely one freeform blob instead. The user should be warned up front that plain-text output is less predictable in return for speed, mirroring the slow-generation warning `frontend/index.js` now shows for structured output (see `showStatus`/`showBatchStatus` calls in the generate handlers).
-- **UI impact:** the review form (`frontend/index.html`'s `#cardBox`) expects eight discrete `<input>`/`<textarea>` fields pre-filled from a `CardDraft`- a plain-text result wouldn't fit that shape and would need its own fallback display (e.g. a single editable text block) rather than reusing the existing per-field form as-is.
-
 ## Engineering tasks
 
+- **Plain-text generation mode: done.** A second generation path
+  (`backend/llm.py::generate_card_plain`), selected via a mode toggle on
+  `/generate`/`/generate/batch` (`GenerateRequest.mode`/
+  `BatchGenerateRequest.mode`, `backend/models.py`) rather than a separate
+  endpoint. Motivated by README.md's Troubleshooting note that dropping
+  `response_format` from an OpenRouter request is faster than structured
+  output. Ended up asking for the same eight fields as plain labeled text
+  lines (parsed back into a `CardDraft` server-side) rather than one
+  freeform blob, so the existing per-field review form
+  (`frontend/index.html`'s `#cardBox`) needed no changes- see `PROMPTS.md`'s
+  "Plain-text generation prompt" section and change log, and
+  `tests/test_llm.py`/`tests/test_main.py`.
 - **Batch Postgres persistence, export parity, and duplicate-check: done.**
   The single-word flow was already fully wired to Postgres end to end-
   `/generate` does the duplicate check before spending an LLM call and

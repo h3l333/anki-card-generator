@@ -17,7 +17,13 @@ Generate Japanese Anki flashcards using the OpenRouter API (free-tier LLM access
 2. Set `OPENROUTER_API_KEY` as an environment variable (or in `.env`); see Configuration.
 3. Install Python deps: `pip install -r requirements.txt`.
 
+Then see "Usage" below - `python scripts/dev.py` starts everything (Postgres, backend, frontend) in one command.
+
 ## Usage
+
+Recommended: `python scripts/dev.py` from the project root starts Postgres, the backend, and the frontend together, then open `http://localhost:8080`. Stop with Ctrl+C (the Postgres container keeps running per its `restart: unless-stopped` policy in `docker-compose.yml` - run `docker compose down` if you want to stop it too).
+
+The steps below are what that script runs, spelled out individually - useful if you want to run just one piece or see what's happening under the hood:
 
 1. Start the database container: `docker compose up -d`.
 2. Start the backend: `uvicorn backend.main:app --reload --port 5000 --env-file .env` (from the project root). `--env-file` is required for uvicorn to actually pick up keys from `.env`; without it, `.env` values are never loaded and `/generate` will fail with "OPENROUTER_API_KEY is not set".
@@ -79,6 +85,8 @@ shell.
 It expects a backend at `http://localhost:5000` exposing `/generate`, `/generate/batch`,
 and `/export`. If the backend is unreachable, clicking Generate or Export will surface
 the connection-error messaging described in PROJECT.md's error handling section.
+
+`python scripts/dev.py` (see Usage above) starts this automatically. To run it standalone:
 
 1. From the project root: `cd frontend`.
 2. Serve it locally: `python -m http.server 8080`.

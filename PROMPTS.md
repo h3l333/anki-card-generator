@@ -72,6 +72,67 @@ field with `type: json_schema`, passing `CardDraft.model_json_schema()` as
 the schema (see `backend/llm.py`). This is OpenRouter's own mechanism,
 distinct from Ollama's `format` parameter used previously.
 
+## Plain-text generation prompt
+
+A second generation path, selected via `GenerateRequest.mode` /
+`BatchGenerateRequest.mode` (`backend/models.py`, `"structured"` or
+`"plain"`, default `"structured"`). Motivated by this file's Provider
+section and README.md's Troubleshooting note that dropping
+`response_format` from an OpenRouter request is faster than structured
+output- the `json_schema` requirement itself adds generation overhead. Asks
+for the same eight fields as the structured prompt, just as plain labeled
+text lines instead of JSON, with no `response_format` sent at all.
+
+**Prompt template:**
+
+```text
+対象語: 「{word}」
+想定読者のレベル: JLPT {level}
+
+あなたは日本語学習者向けの辞書カードを作成します。
+必ず「{word}」についてのみ回答してください。他の単語やより一般的な例に置き換えないでください。
+definition_ja、nuance、example_sentenceは、JLPT {level}の学習者が理解できる語彙と文法だけを使って書いてください。
+
+次の8項目を、必ず英大文字のラベルで始まる1行ずつの形式で出力してください。
+ラベルの直後にコロン(:)、半角スペース、続けて値のみを同じ行に書いてください。
+マークダウンの見出しや箇条書き記号(-、*、#など)、番号付けは使わないでください。
+各項目の値は改行を含めず1行に収めてください。ラベルと値の8行以外は一切出力しないでください(前置きや説明文も禁止)。
+
+EXPRESSION: 「{word}」の表記(漢字・かな)
+READING: 「{word}」のひらがなでの読み方
+DEFINITION_JA: 「{word}」の日本語のみによる定義(モノリンガル)。JLPT {level}レベル向け。
+NUANCE: 「{word}」の使い方のニュアンス、フォーマル度、類似語との違いなど。JLPT {level}レベル向け。
+SYNONYMS: 「{word}」の類義語。読点で区切って複数挙げる。該当するものがなければ「該当なし」。
+ANTONYMS: 「{word}」の対義語。読点で区切って複数挙げる。該当するものがなければ「該当なし」。
+EXAMPLE_SENTENCE: 「{word}」を使った自然な例文。ふりがなは付けず、漢字とかなのみのプレーンテキスト。
+JLPT_LEVEL: 「{word}」の推定JLPTレベル(N5〜N1のいずれか一つ)。
+
+繰り返しますが、対象語は「{word}」です。出力は上記8行のみで、それ以外の文章は一切含めないでください。
+```
+
+The eight labels (`EXPRESSION`, `READING`, `DEFINITION_JA`, `NUANCE`,
+`SYNONYMS`, `ANTONYMS`, `EXAMPLE_SENTENCE`, `JLPT_LEVEL`) are deliberately
+identical to `CardDraft`'s field names, uppercased- English rather than
+Japanese specifically so the parser can key a dict straight off the label
+text with no separate label-to-field mapping table to keep in sync, and so
+there's no risk of the model rewording a Japanese label differently between
+generations.
+
+**Parsing:** `backend/llm.py::_parse_plain_card` splits each line on the
+first `:` or full-width `：`, tolerates a stray leading bullet marker
+(`-`/`*`/`•`) or whitespace before a label, and silently skips any line that
+isn't a recognized label (stray prose the model added despite being told
+not to). It raises if any of the eight labels is missing from the response
+at all- there's no partial-card fallback, and (v1 scope) no separate retry
+for a parse failure the way there is for word drift; a missing-label
+response surfaces as a normal `LLMError`, same as any other generation
+failure.
+
+**Not yet live-verified** against a real OpenRouter response the way the
+structured path was (see the 2026-08-07 change log entry below)- the label
+format's reliability against actual free-tier model output still needs
+observing.
+
 ## Change log
 
 - 2026-07-25: initial prompt and model choice documented alongside the first
@@ -234,3 +295,24 @@ distinct from Ollama's `format` parameter used previously.
   no longer a single response document it would describe. Covered by new
   tests in `tests/test_llm.py` and `tests/test_main.py`; see README.md
   Usage.
+- 2026-08-20: added plain-text generation mode (see "Plain-text generation
+  prompt" above)- a second `backend/llm.py` function, `generate_card_plain`,
+  selected via the new `GenerateRequest.mode`/`BatchGenerateRequest.mode`
+  field (`backend/models.py`, default `"structured"`) and a matching toggle
+  in `frontend/index.html`. The request/retry/error-wrapping logic
+  previously inline in `generate_card` was extracted into a shared
+  `_generate_card_via` helper, parameterized by prompt template,
+  `response_format` (`None` for plain mode, which is what actually omits
+  the key from the OpenRouter payload), and a parse function
+  (`CardDraft.model_validate_json` for structured, the new
+  `_parse_plain_card` for plain)- both public functions are now thin
+  wrappers over it, so the word-drift retry and `LLMError` wrapping behave
+  identically either way. `generate_cards_batch` gained a `mode` parameter
+  threaded through from `backend/main.py`'s `/generate/batch` route. No
+  database schema change was needed- plain mode still produces a parsed
+  `CardDraft`, indistinguishable from a structured-mode result once parsed,
+  so the Postgres duplicate-check cache (`find_word_by_kanji`'s
+  `(kanji, level)` key) deliberately stays mode-agnostic rather than also
+  keying on `mode`. Not yet live-verified against a real OpenRouter
+  response. Covered by new tests in `tests/test_llm.py` and
+  `tests/test_main.py`.
