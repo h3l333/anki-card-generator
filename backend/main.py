@@ -1,9 +1,9 @@
 # 3 FastAPI routes
 import json
-# Used only by _stream_batch_results below- each NDJSON line it yields is a plain dict
-# serialized by hand via json.dumps, not a Pydantic model, since StreamingResponse just
-# wants raw bytes/str chunks rather than something FastAPI can validate against a
-# response_model the way the other routes' return values are.
+# Used by _stream_generate_result and _stream_batch_results below- each NDJSON line
+# they yield is a plain dict serialized by hand via json.dumps, not a Pydantic model,
+# since StreamingResponse just wants raw bytes/str chunks rather than something FastAPI
+# can validate against a response_model.
 
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
@@ -23,10 +23,10 @@ from backend.db import (
     insert_word,
     record_export,
 )
+from backend import llm
 from backend.llm import (
     JLPT_LEVEL_DEFAULT,
-    LLMError,
-    generate_card,
+    generate_card_with_events,
     generate_cards_batch,
 )
 from backend.models import (
@@ -35,7 +35,6 @@ from backend.models import (
     CardDraft,
     ExportRequest,
     GenerateRequest,
-    GenerateResponse,
 )
 
 # Every name imported here (generate_card, export_card, parse_and_validate,
@@ -57,7 +56,17 @@ async def lifespan(app: FastAPI):
     # CREATE TABLE statements against Postgres, since init_db() itself is never
     # called anywhere else.
     init_db()
+    # `yield` hands control back to FastAPI to run the app.
+    # `@asynccontextmanager` requires a generator (a `yield` somewhere in the body)-
+    # swapping it for `return` would stop this from being a generator function at all,
+    # so FastAPI's `async with lifespan(app):` would fail at startup instead of just
+    # skipping cleanup.
     yield
+    llm._EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    # Without this, shutdown would hang on ThreadPoolExecutor's default atexit join.
+    # cancel_futures=True only drops futures that haven't started running yet- a
+    # generation already mid-`requests.post` can't be forcibly killed (Python threads
+    # aren't preemptible), so shutdown during an in-flight call still waits it out.
 
 
 app = FastAPI(title="Anki Tool v2 Backend", lifespan=lifespan)
@@ -71,9 +80,9 @@ app = FastAPI(title="Anki Tool v2 Backend", lifespan=lifespan)
 # origin (e.g. http://localhost:8080 or file://) than this API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], # Allows requests from any origin.
+    allow_methods=["*"], # Permits all HTTP methods.
+    allow_headers=["*"], # Accepts all HTTP request headers.
 )
 # Middleware runs on every request/response passing through the app, before/after the
 # matched route function itself- CORSMiddleware specifically is what lets the browser
@@ -90,68 +99,89 @@ def _resolve_level(level: str | None) -> str:
 # import time in backend/llm.py, rather than each route re-deriving it inline.
 
 
-@app.post("/generate", response_model=GenerateResponse)
+def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]:
+    # Mirrors _stream_batch_results below but for a single word: passes heartbeat/retry
+    # events straight through as NDJSON lines, then on the terminal event either
+    # persists the newly-generated card (success) or reports why it failed (error)-
+    # both as one final NDJSON line, since the HTTP status is already committed to 200
+    # by the time any of this runs (see generate() below).
+    for event in generate_card_with_events(word, level, mode=mode):
+        if event["event"] == "result":
+            try:
+                card = CardDraft(**event["card"])
+                word_id = insert_word(
+                    kanji=word, reading=card.reading, source="manual", level=level
+                )
+                insert_card(
+                    word_id=word_id,
+                    definition_ja=card.definition_ja,
+                    nuance=card.nuance,
+                    synonyms=card.synonyms,
+                    antonyms=card.antonyms,
+                    example_sentence=card.example_sentence,
+                    jlpt_level=card.jlpt_level,
+                )
+            except Exception as exc:
+                # A DB failure this late can no longer become an HTTPException (bytes
+                # are already flushed)- it has to resolve to its own error line instead
+                # of raising out of this generator, which Starlette would otherwise just
+                # turn into a truncated response the client can't distinguish from a
+                # network blip.
+                yield json.dumps({"event": "error", "detail": f"failed to save card: {exc}"}) + "\n"
+                return
+            yield json.dumps(
+                {"event": "result", "duplicate": False, "word_id": word_id, "card": card.model_dump()}
+            ) + "\n"
+            return
+        yield json.dumps(event) + "\n"
+
+
+@app.post("/generate")
 def generate(request: GenerateRequest):
     level = _resolve_level(request.level)
     existing_word = find_word_by_kanji(request.word, level=level)
     if existing_word is not None:
         existing_card = get_card(existing_word.id)
-        return GenerateResponse(
-            word_id=existing_word.id,
-            duplicate=True,
-            card=CardDraft(
-                expression=existing_word.kanji,
-                reading=existing_word.reading,
-                definition_ja=existing_card.definition_ja,
-                nuance=existing_card.nuance,
-                synonyms=existing_card.synonyms,
-                antonyms=existing_card.antonyms,
-                example_sentence=existing_card.example_sentence,
-                jlpt_level=existing_card.jlpt_level,
-            ),
+        card = CardDraft(
+            expression=existing_word.kanji,
+            reading=existing_word.reading,
+            definition_ja=existing_card.definition_ja,
+            nuance=existing_card.nuance,
+            synonyms=existing_card.synonyms,
+            antonyms=existing_card.antonyms,
+            example_sentence=existing_card.example_sentence,
+            jlpt_level=existing_card.jlpt_level,
         )
-    # Checked before anything else, and before generate_card() is ever called- this is
-    # the token-saving short-circuit. `existing_card` is rebuilt into a CardDraft here
-    # (rather than exposing the ORM row directly) so the response shape is identical
-    # whether `card` came from OpenRouter or from Postgres- the frontend doesn't need to
-    # know which branch produced it.
+        line = json.dumps(
+            {"event": "result", "duplicate": True, "word_id": existing_word.id, "card": card.model_dump()}
+        ) + "\n"
+        return StreamingResponse(iter([line]), media_type="application/x-ndjson")
+    # Checked before anything else, and before generate_card_with_events() is ever
+    # called- this is the token-saving short-circuit, and stays a single synchronous
+    # line (no thread pool, no polling) since there's no OpenRouter call to report
+    # progress on. `existing_card` is rebuilt into a CardDraft here (rather than
+    # exposing the ORM row directly) so the payload shape is identical whether `card`
+    # came from OpenRouter or from Postgres- the frontend doesn't need to know which
+    # branch produced it.
 
-    try:
-        card = generate_card(request.word, level=level)
-    except LLMError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    word_id = insert_word(
-        kanji=request.word, reading=card.reading, source="manual", level=level
+    return StreamingResponse(
+        _stream_generate_result(request.word, level, request.mode), media_type="application/x-ndjson"
     )
-    insert_card(
-        word_id=word_id,
-        definition_ja=card.definition_ja,
-        nuance=card.nuance,
-        synonyms=card.synonyms,
-        antonyms=card.antonyms,
-        example_sentence=card.example_sentence,
-        jlpt_level=card.jlpt_level,
-    )
-    # Persisted immediately- before this function returns anything to the frontend, and
-    # therefore before the user has had any chance to edit a field. This is what makes
-    # the cards row always equal to the model's raw output; see the write-once note on
-    # Card in backend/db.py and step 3 of ARCHITECTURE.md.
-
-    return GenerateResponse(word_id=word_id, duplicate=False, card=card)
 # @app.post("/generate") registers this function as the handler for POST requests to
 # that path. FastAPI parses the incoming JSON body against GenerateRequest automatically
 # before this function body even runs- a request missing the "word" field, or with the
 # wrong type, never reaches this code at all; FastAPI responds with its own 422 error
-# first. response_model=GenerateResponse (new here- the route used to return a bare
-# CardDraft) tells FastAPI the actual response shape now includes word_id/duplicate
-# alongside the card itself.
-# 502 ("Bad Gateway") reflects that the failure happened talking to an upstream service
-# (OpenRouter), not this backend itself- the duplicate-check branch above never reaches
-# this try block at all, since it never calls OpenRouter in the first place.
+# first. The response body is now a stream of newline-delimited JSON event lines (see
+# _stream_generate_result and the event schema comment on _stream_batch_results below),
+# not a single GenerateResponse document- this is what lets the frontend show live
+# progress (heartbeat/retry) instead of just waiting on one blocking response. A
+# generation failure (formerly a 502) is now the stream's terminal
+# {"event": "error", "detail": ...} line instead of an HTTP error status, since the
+# status code is already committed to 200 by the time StreamingResponse starts sending
+# bytes.
 
 
-def _stream_batch_results(words: list[str], level: str) -> Iterator[str]:
+def _stream_batch_results(words: list[str], level: str, mode: str) -> Iterator[str]:
     # One NDJSON line per yield- frontend/index.js reads this response body
     # incrementally (not as one parsed JSON document) so it can update a "3/12 done"
     # progress counter and render each carousel card as its result arrives, instead of
@@ -195,7 +225,7 @@ def _stream_batch_results(words: list[str], level: str) -> Iterator[str]:
     # up correct once the loop below fills it in from generate_cards_batch().
 
     generated = iter(
-        generate_cards_batch([word for _, word in to_generate], level=level)
+        generate_cards_batch([word for _, word in to_generate], level=level, mode=mode)
     )
     # iter() is a no-op on the real generate_cards_batch() (already a generator, hence
     # already an iterator)- it's here so tests/test_main.py can keep mocking this call
@@ -211,7 +241,16 @@ def _stream_batch_results(words: list[str], level: str) -> Iterator[str]:
             # is-it-a-duplicate condition, so pulling from `generated` here in this same
             # order lines each `next()` call up with the correct word, without needing to
             # track which to_generate entry this is.
-            result = next(generated)
+            item = next(generated)
+            while not isinstance(item, BatchCardResult):
+                # A heartbeat/retry progress dict (see generate_cards_batch/
+                # generate_card_with_events in backend/llm.py) for this word's still-
+                # in-flight generation- passed straight through as its own NDJSON line
+                # so the frontend can show it's not just the LLM call finishing, and
+                # keep pulling until the word's terminal BatchCardResult arrives.
+                yield json.dumps(item) + "\n"
+                item = next(generated)
+            result = item
             if result.card is not None:
                 word_id = insert_word(
                     kanji=result.word,
@@ -259,7 +298,7 @@ def generate_batch(request: BatchGenerateRequest):
 
     level = _resolve_level(request.level)
     return StreamingResponse(
-        _stream_batch_results(words, level), media_type="application/x-ndjson"
+        _stream_batch_results(words, level, request.mode), media_type="application/x-ndjson"
     )
 # No response_model here (unlike the plain /generate route above)- the body is a stream
 # of newline-delimited JSON objects, not one document matching a single Pydantic model,
