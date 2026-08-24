@@ -86,6 +86,17 @@ It expects a backend at `http://localhost:5000` exposing `/generate`, `/generate
 and `/export`. If the backend is unreachable, clicking Generate or Export will surface
 the connection-error messaging described in PROJECT.md's error handling section.
 
+## Chrome extension
+
+For a faster single-word workflow with no review step, `extension/` is a Chrome (Manifest
+V3) extension: paste a word into its popup, and it's generated and exported to Anki
+automatically in the background, with a desktop notification when each one finishes.
+Multiple words can be submitted back-to-back without waiting for earlier ones to finish.
+It calls a dedicated `POST /generate/export` endpoint on the same backend (see
+`backend/main.py`) that combines generation and export server-side. Editing generated
+cards, resolving duplicates, and batch upload are still web-app-only - the popup links
+there. See [extension/README.md](extension/README.md) for setup and known limitations.
+
 `python scripts/dev.py` (see Usage above) starts this automatically. To run it standalone:
 
 1. From the project root: `cd frontend`.

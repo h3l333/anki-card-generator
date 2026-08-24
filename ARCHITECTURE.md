@@ -50,3 +50,7 @@ flowchart TD
    - **Prior export exists:** Python calls AnkiConnect's `updateNoteFields` against that export's note ID instead, so the existing Anki note is rewritten rather than duplicated.
    - Either way, a successful AnkiConnect call is recorded as a new row in the `exports` table.
    - If Anki is unreachable, UI displays connection error without discarding user edits, and nothing is written to `exports`.
+
+## Chrome Extension Flow (no review step)
+
+The extension (`extension/`) skips step 4 above entirely. It calls a single combined endpoint, `POST /generate/export`, which internally runs the same duplicate-check (step 2) and LLM/persistence (step 3) logic, then immediately does the export (step 5) against the freshly generated or Postgres-fetched card- no editable form, no user-in-the-loop step between generation and Anki. The endpoint streams back one terminal NDJSON event: `"exported"` on success, or `"error"` with a `stage` of `"generate"` (nothing new persisted) or `"export"` (card generated and saved to Postgres, but the AnkiConnect call failed- recoverable via the web app's ordinary duplicate-word path, since re-generating the same word there will find it already on file). The extension's background service worker can have several of these requests in flight at once, each independent, and shows a desktop notification per outcome. See `extension/README.md`.

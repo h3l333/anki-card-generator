@@ -35,6 +35,7 @@ from backend.models import (
     CardDraft,
     ExportRequest,
     GenerateRequest,
+    card_draft_to_export_request,
 )
 
 # Every name imported here (generate_card, export_card, parse_and_validate,
@@ -99,6 +100,45 @@ def _resolve_level(level: str | None) -> str:
 # import time in backend/llm.py, rather than each route re-deriving it inline.
 
 
+def _lookup_existing_card(word: str, level: str) -> tuple[int, CardDraft] | None:
+    existing_word = find_word_by_kanji(word, level=level)
+    if existing_word is None:
+        return None
+    existing_card = get_card(existing_word.id)
+    card = CardDraft(
+        expression=existing_word.kanji,
+        reading=existing_word.reading,
+        definition_ja=existing_card.definition_ja,
+        nuance=existing_card.nuance,
+        synonyms=existing_card.synonyms,
+        antonyms=existing_card.antonyms,
+        example_sentence=existing_card.example_sentence,
+        jlpt_level=existing_card.jlpt_level,
+    )
+    return existing_word.id, card
+# Shared duplicate-check-and-rebuild step: a Postgres hit is reassembled into a CardDraft so
+# its shape is identical whether `card` came from OpenRouter or from Postgres, the same
+# reasoning generate() below originally had inline. Used by generate(), _stream_batch_results()
+# and _stream_generate_export_result() so this rebuild only lives in one place.
+
+
+def _persist_generated_card(word: str, level: str, source: str, card: CardDraft) -> int:
+    word_id = insert_word(kanji=word, reading=card.reading, source=source, level=level)
+    insert_card(
+        word_id=word_id,
+        definition_ja=card.definition_ja,
+        nuance=card.nuance,
+        synonyms=card.synonyms,
+        antonyms=card.antonyms,
+        example_sentence=card.example_sentence,
+        jlpt_level=card.jlpt_level,
+    )
+    return word_id
+# Shared insert_word/insert_card pair for a freshly-generated (non-duplicate) card- `source`
+# distinguishes which flow produced it ("manual" for /generate, "batch" for /generate/batch,
+# "extension" for /generate/export), same words table, no schema change.
+
+
 def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]:
     # Mirrors _stream_batch_results below but for a single word: passes heartbeat/retry
     # events straight through as NDJSON lines, then on the terminal event either
@@ -109,18 +149,7 @@ def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]:
         if event["event"] == "result":
             try:
                 card = CardDraft(**event["card"])
-                word_id = insert_word(
-                    kanji=word, reading=card.reading, source="manual", level=level
-                )
-                insert_card(
-                    word_id=word_id,
-                    definition_ja=card.definition_ja,
-                    nuance=card.nuance,
-                    synonyms=card.synonyms,
-                    antonyms=card.antonyms,
-                    example_sentence=card.example_sentence,
-                    jlpt_level=card.jlpt_level,
-                )
+                word_id = _persist_generated_card(word, level, "manual", card)
             except Exception as exc:
                 # A DB failure this late can no longer become an HTTPException (bytes
                 # are already flushed)- it has to resolve to its own error line instead
@@ -139,21 +168,11 @@ def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]:
 @app.post("/generate")
 def generate(request: GenerateRequest):
     level = _resolve_level(request.level)
-    existing_word = find_word_by_kanji(request.word, level=level)
-    if existing_word is not None:
-        existing_card = get_card(existing_word.id)
-        card = CardDraft(
-            expression=existing_word.kanji,
-            reading=existing_word.reading,
-            definition_ja=existing_card.definition_ja,
-            nuance=existing_card.nuance,
-            synonyms=existing_card.synonyms,
-            antonyms=existing_card.antonyms,
-            example_sentence=existing_card.example_sentence,
-            jlpt_level=existing_card.jlpt_level,
-        )
+    existing = _lookup_existing_card(request.word, level)
+    if existing is not None:
+        word_id, card = existing
         line = json.dumps(
-            {"event": "result", "duplicate": True, "word_id": existing_word.id, "card": card.model_dump()}
+            {"event": "result", "duplicate": True, "word_id": word_id, "card": card.model_dump()}
         ) + "\n"
         return StreamingResponse(iter([line]), media_type="application/x-ndjson")
     # Checked before anything else, and before generate_card_with_events() is ever
@@ -196,26 +215,12 @@ def _stream_batch_results(words: list[str], level: str, mode: str) -> Iterator[s
     results: list[BatchCardResult | None] = [None] * total
     to_generate: list[tuple[int, str]] = []
     for i, word in enumerate(words):
-        existing_word = find_word_by_kanji(word, level=level)
-        if existing_word is None:
+        existing = _lookup_existing_card(word, level)
+        if existing is None:
             to_generate.append((i, word))
             continue
-        existing_card = get_card(existing_word.id)
-        results[i] = BatchCardResult(
-            word=word,
-            word_id=existing_word.id,
-            duplicate=True,
-            card=CardDraft(
-                expression=existing_word.kanji,
-                reading=existing_word.reading,
-                definition_ja=existing_card.definition_ja,
-                nuance=existing_card.nuance,
-                synonyms=existing_card.synonyms,
-                antonyms=existing_card.antonyms,
-                example_sentence=existing_card.example_sentence,
-                jlpt_level=existing_card.jlpt_level,
-            ),
-        )
+        word_id, card = existing
+        results[i] = BatchCardResult(word=word, word_id=word_id, duplicate=True, card=card)
     # Same duplicate check /generate does for a single word (see the generate() route
     # above), just run per word up front for the whole file- these are plain Postgres
     # lookups (fast, synchronous), unlike the LLM calls below, so there's no streaming
@@ -252,22 +257,7 @@ def _stream_batch_results(words: list[str], level: str, mode: str) -> Iterator[s
                 item = next(generated)
             result = item
             if result.card is not None:
-                word_id = insert_word(
-                    kanji=result.word,
-                    reading=result.card.reading,
-                    source="batch",
-                    level=level,
-                )
-                insert_card(
-                    word_id=word_id,
-                    definition_ja=result.card.definition_ja,
-                    nuance=result.card.nuance,
-                    synonyms=result.card.synonyms,
-                    antonyms=result.card.antonyms,
-                    example_sentence=result.card.example_sentence,
-                    jlpt_level=result.card.jlpt_level,
-                )
-                result.word_id = word_id
+                result.word_id = _persist_generated_card(result.word, level, "batch", result.card)
             # Same insert_word/insert_card persistence /generate does for a single word. A
             # failed word (result.card is None, result.error set instead) is skipped
             # entirely- there's no card content to persist for it. Only genuinely new,
@@ -306,6 +296,81 @@ def generate_batch(request: BatchGenerateRequest):
 # validation-error path reflects that the problem is with what the client (frontend)
 # sent- an invalid file- rather than anything going wrong on the backend or with
 # OpenRouter.
+
+
+def _stream_export_only(word_id: int, card: CardDraft, duplicate: bool) -> Iterator[str]:
+    export_request = card_draft_to_export_request(card, word_id=word_id)
+    latest_export = get_latest_export(word_id)
+    anki_note_id = latest_export.anki_note_id if latest_export is not None else None
+    try:
+        note_id = export_card(export_request, anki_note_id=anki_note_id)
+    except AnkiConnectError as exc:
+        # Generation (or the Postgres duplicate lookup) already succeeded and the word is
+        # already persisted- only the AnkiConnect call failed, so this is recoverable: the
+        # extension can tell the user to open the web frontend and generate the same word,
+        # which will hit the duplicate short-circuit and let them export manually from there.
+        yield json.dumps({
+            "event": "error",
+            "stage": "export",
+            "detail": str(exc),
+            "word_id": word_id,
+            "duplicate": duplicate,
+            "card": card.model_dump(),
+        }) + "\n"
+        return
+    record_export(word_id, note_id)
+    yield json.dumps({
+        "event": "exported",
+        "duplicate": duplicate,
+        "word_id": word_id,
+        "anki_note_id": note_id,
+        "card": card.model_dump(),
+    }) + "\n"
+
+
+def _stream_generate_export_result(word: str, level: str, mode: str) -> Iterator[str]:
+    # Mirrors _stream_generate_result above, but the terminal event is "generated and
+    # exported" rather than just "generated"- there's no frontend review step for this
+    # route to hand a reviewed card back to, so the card goes straight to AnkiConnect via
+    # _stream_export_only as soon as it's available (freshly generated or a Postgres hit).
+    existing = _lookup_existing_card(word, level)
+    if existing is not None:
+        word_id, card = existing
+        yield from _stream_export_only(word_id, card, duplicate=True)
+        return
+
+    for event in generate_card_with_events(word, level, mode=mode):
+        if event["event"] == "error":
+            yield json.dumps({"event": "error", "stage": "generate", "detail": event["detail"]}) + "\n"
+            return
+        if event["event"] != "result":
+            yield json.dumps(event) + "\n"
+            continue
+        try:
+            card = CardDraft(**event["card"])
+            word_id = _persist_generated_card(word, level, "extension", card)
+        except Exception as exc:
+            yield json.dumps({"event": "error", "stage": "generate", "detail": f"failed to save card: {exc}"}) + "\n"
+            return
+        yield from _stream_export_only(word_id, card, duplicate=False)
+        return
+
+
+@app.post("/generate/export")
+def generate_and_export(request: GenerateRequest):
+    level = _resolve_level(request.level)
+    return StreamingResponse(
+        _stream_generate_export_result(request.word, level, request.mode),
+        media_type="application/x-ndjson",
+    )
+# Combined generate+export for the Chrome extension (extension/background.js)- it has no
+# review/edit UI, so it skips the generate-then-separately-POST-/export round trip and gets
+# one endpoint that does both server-side. `stage` on an "error" event tells the caller
+# whether generation itself failed ("generate"- nothing new persisted) or only the AnkiConnect
+# push failed ("export"- the word is already saved in Postgres, so it's recoverable via the
+# web frontend's ordinary duplicate-word flow). A successful terminal event is named
+# "exported", not "result" like plain /generate's, specifically so a client can't confuse "the
+# card was generated" with "the card actually reached Anki".
 
 
 @app.post("/export")

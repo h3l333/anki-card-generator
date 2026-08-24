@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Anki Tool v2 - Quick Export</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    width: 320px;
+    padding: 12px;
+    margin: 0;
+    color: #222;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 10px;
+  }
+  form {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    font-size: 14px;
+  }
+  select {
+    padding: 6px;
+    font-size: 13px;
+  }
+  button {
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .info {
+    font-size: 12px;
+    color: #555;
+    background: #f4f4f4;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+  .info a {
+    color: #1a5fb4;
+  }
+  ul#statusList {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  ul#statusList li {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 4px;
+    border-bottom: 1px solid #eee;
+    font-size: 13px;
+  }
+  .word {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+  .badge.queued, .badge.generating { background: #fff3cd; color: #7a5b00; }
+  .badge.done { background: #d4edda; color: #155724; }
+  .badge.error, .badge.export-error { background: #f8d7da; color: #721c24; }
+  .empty {
+    font-size: 12px;
+    color: #888;
+    padding: 6px 4px;
+  }
+  details {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+  details summary {
+    cursor: pointer;
+    color: #555;
+  }
+  .settings-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .settings-row label {
+    font-size: 11px;
+    color: #555;
+  }
+  .settings-row input {
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+  #settingsSaveBtn {
+    margin-top: 6px;
+  }
+  #settingsStatus {
+    font-size: 11px;
+    color: #155724;
+    margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>Anki Tool v2 - Quick Export</h1>
+
+  <form id="submitForm">
+    <input type="text" id="wordInput" placeholder="Paste a word" autocomplete="off" required />
+    <select id="levelSelect">
+      <option value="N5">N5</option>
+      <option value="N4">N4</option>
+      <option value="N3" selected>N3</option>
+      <option value="N2">N2</option>
+      <option value="N1">N1</option>
+    </select>
+    <button type="submit">Go</button>
+  </form>
+
+  <div class="info">
+    Export to Anki is automatic - there's no review step here.
+    For editing, duplicates, or batch generation, use the
+    <a href="#" id="webAppLink" target="_blank">full web app</a>.
+  </div>
+
+  <ul id="statusList"></ul>
+
+  <details>
+    <summary>Settings</summary>
+    <div class="settings-row">
+      <label for="backendUrlInput">Backend URL</label>
+      <input type="text" id="backendUrlInput" />
+    </div>
+    <div class="settings-row">
+      <label for="frontendUrlInput">Web app URL</label>
+      <input type="text" id="frontendUrlInput" />
+    </div>
+    <button type="button" id="settingsSaveBtn">Save</button>
+    <span id="settingsStatus"></span>
+    <div class="settings-row" style="margin-top:6px; color:#888;">
+      Changing the backend/web app URL past the localhost defaults also requires editing
+      extension/manifest.json's host_permissions and reloading the extension.
+    </div>
+  </details>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -113,6 +113,28 @@ class ExportRequest(BaseModel):
 # rather than erroring- see backend/main.py's export() route for that branch.
 
 
+def card_draft_to_export_request(card: CardDraft, word_id: int | None = None) -> ExportRequest:
+    return ExportRequest(
+        expression=card.expression,
+        reading=card.reading,
+        definition=card.definition_ja,
+        nuance=card.nuance,
+        synonyms=card.synonyms,
+        antonyms=card.antonyms,
+        example=card.example_sentence,
+        jlpt=card.jlpt_level,
+        word_id=word_id,
+    )
+# A second call site for the CardDraft->ExportRequest field-name bridge described above
+# (definition_ja->definition, example_sentence->example, jlpt_level->jlpt)- this one lives
+# server-side because POST /generate/export (backend/main.py) auto-exports a freshly
+# generated card with no frontend review step in between to do the renaming by hand, unlike
+# the reviewed-fields path frontend/index.js posts through today. Renaming a field on either
+# CardDraft or ExportRequest must be reflected here too, in addition to the three places the
+# comment above already lists (backend/anki.py, frontend/index.js, and whichever of these two
+# models didn't change).
+
+
 class BatchGenerateRequest(BaseModel):
     file_content: str
     level: JlptLevel | None = None

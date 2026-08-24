@@ -542,3 +542,124 @@ def test_export_route_updates_existing_note_when_prior_export_exists(
     # instead of addNote, so the existing Anki note gets rewritten rather than duplicated.
     # A new exports row still gets recorded afterwards (record_export), per the "one row
     # per export event" design in DATABASE.md- re-exporting isn't exempt from history.
+
+
+def test_generate_export_route_generates_and_exports_fresh_word(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ),
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card"),
+        patch("backend.main.get_latest_export", return_value=None),
+        patch("backend.main.export_card", return_value=555) as mock_export_card,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        response = client.post("/generate/export", json={"word": "大人"})
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    body = events[-1]
+    assert body["event"] == "exported"
+    assert body["duplicate"] is False
+    assert body["word_id"] == 1
+    assert body["anki_note_id"] == 555
+    assert body["card"]["expression"] == "大人"
+    mock_export_card.assert_called_once_with(ANY, anki_note_id=None)
+    mock_record_export.assert_called_once_with(1, 555)
+    # No review step for this route (extension/ has no editable form)- a fresh generation
+    # goes straight from generate_card_with_events into export_card, with no /export
+    # round trip. anki_note_id=None means export_card does addNote, same as a first-time
+    # export through the reviewed /export route.
+
+
+def test_generate_export_route_duplicate_word_reexports_without_llm_call(
+    client, sample_card_json
+):
+    existing_word = SimpleNamespace(id=7, kanji="大人", reading=sample_card_json["reading"])
+    existing_card = SimpleNamespace(
+        definition_ja=sample_card_json["definition_ja"],
+        nuance=sample_card_json["nuance"],
+        synonyms=sample_card_json["synonyms"],
+        antonyms=sample_card_json["antonyms"],
+        example_sentence=sample_card_json["example_sentence"],
+        jlpt_level=sample_card_json["jlpt_level"],
+    )
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=existing_word),
+        patch("backend.main.get_card", return_value=existing_card),
+        patch("backend.main.generate_card_with_events") as mock_generate,
+        patch(
+            "backend.main.get_latest_export",
+            return_value=SimpleNamespace(anki_note_id=777),
+        ),
+        patch("backend.main.export_card", return_value=777) as mock_export_card,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        response = client.post("/generate/export", json={"word": "大人"})
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    body = events[-1]
+    assert body["event"] == "exported"
+    assert body["duplicate"] is True
+    assert body["word_id"] == 7
+    assert body["anki_note_id"] == 777
+    mock_generate.assert_not_called()
+    mock_export_card.assert_called_once_with(ANY, anki_note_id=777)
+    mock_record_export.assert_called_once_with(7, 777)
+    # Same duplicate short-circuit /generate has- re-submitting an already-known word from
+    # the extension re-exports (updateNoteFields via anki_note_id=777) instead of calling
+    # the LLM again.
+
+
+def test_generate_export_route_reports_generation_error_with_stage(client):
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "error", "detail": "boom"}],
+        ),
+        patch("backend.main.export_card") as mock_export_card,
+    ):
+        response = client.post("/generate/export", json={"word": "大人"})
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    assert events[-1] == {"event": "error", "stage": "generate", "detail": "boom"}
+    mock_export_card.assert_not_called()
+    # A generation failure never reaches export_card- nothing was persisted, so there's
+    # nothing to export. `stage: "generate"` is what lets the extension tell this apart
+    # from an export-stage failure, where the card is already saved.
+
+
+def test_generate_export_route_reports_export_error_as_recoverable(
+    client, sample_card_json
+):
+    card = CardDraft(**sample_card_json)
+    with (
+        patch("backend.main.find_word_by_kanji", return_value=None),
+        patch(
+            "backend.main.generate_card_with_events",
+            return_value=[{"event": "result", "card": card.model_dump()}],
+        ),
+        patch("backend.main.insert_word", return_value=1),
+        patch("backend.main.insert_card"),
+        patch("backend.main.get_latest_export", return_value=None),
+        patch("backend.main.export_card", side_effect=AnkiConnectError("unreachable")),
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        response = client.post("/generate/export", json={"word": "大人"})
+    assert response.status_code == 200
+    events = _read_generate_stream(response)
+    body = events[-1]
+    assert body["event"] == "error"
+    assert body["stage"] == "export"
+    assert body["detail"] == "unreachable"
+    assert body["word_id"] == 1
+    assert body["card"]["expression"] == "大人"
+    mock_record_export.assert_not_called()
+    # The card was already generated and persisted (insert_word/insert_card ran) before
+    # AnkiConnect failed- word_id/card are included in the error event specifically so the
+    # extension can tell the user this is recoverable via the web frontend's duplicate-word
+    # path, unlike a stage="generate" failure where nothing was saved at all.
