@@ -71,8 +71,8 @@ solely on the LLM.
   - `tests/test_main.py` covers persistence, the failed-word (no card, no
     persistence) case, and the duplicate-word case (no LLM call, no
     re-persistence, correct response order).
-  - Still missing regardless of the above: a `tests/test_db.py` suite
-    exercising `backend/db.py` directly against a real database.
+  - `tests/test_db.py` exercises `backend/db.py` directly against a real
+    database (see `CLAUDE.md`'s `backend/db.py` note).
 - **UML diagrams:** Diagram the repo's structure and data flow to make the
   architecture easier to reason about at a glance. `diagrams/` (PlantUML
   `.puml` source, see `diagrams/README.md`) exists for this; no diagrams
