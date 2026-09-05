@@ -15,12 +15,20 @@ import pytest
 import requests
 
 from backend.anki import (
+    FULL_MODE_FIELDS,
     AnkiConnectError,
+    _add_note_checked,
     _build_fields,
+    _build_grammar_fields,
+    _build_reading_fields,
     _default_note_type,
-    _ensure_full_mode_note_type,
+    _ensure_note_type,
     export_card,
+    export_dataset_vocab_card,
+    export_grammar_card,
+    export_reading_card,
 )
+from backend.models import GrammarCard, ReadingCard
 
 # backend/anki.py has two functions under test in this file:
 #   - _build_fields(card: ExportRequest) -> dict: pure- no network calls, no side effects. It
@@ -201,26 +209,27 @@ def test_default_note_type_is_mode_dependent():
     assert _default_note_type("bogus") == "Basic"
 
 
-# _ensure_full_mode_note_type is the "full" mode counterpart to the createModel-avoidance
-# concern above- it must never call createModel when NOTE_TYPE already exists, since
+# _ensure_note_type is the "full" mode counterpart to the createModel-avoidance concern
+# above- it must never call createModel when the given note type already exists, since
 # createModel has no "update" mode and would risk clobbering a note type the user
-# customized (templates, styling, extra fields).
-def test_ensure_full_mode_note_type_skips_creation_when_already_exists(monkeypatch):
-    monkeypatch.setattr("backend.anki.NOTE_TYPE", "Japanese")
+# customized (templates, styling, extra fields). Generalized (takes note_type/fields/
+# front_field explicitly) so it's shared by vocab/grammar/reading rather than
+# hardcoding NOTE_TYPE/FULL_MODE_FIELDS as it did when it was vocab-only.
+def test_ensure_note_type_skips_creation_when_already_exists(monkeypatch):
     mock_response = MagicMock()
     mock_response.json.return_value = {"result": ["Basic", "Japanese"], "error": None}
     with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
-        _ensure_full_mode_note_type()
+        _ensure_note_type("Japanese", FULL_MODE_FIELDS, "Expression")
 
     mock_post.assert_called_once()
     assert mock_post.call_args.kwargs["json"]["action"] == "modelNames"
 
 
-# When NOTE_TYPE is missing from AnkiConnect's modelNames result, _ensure_full_mode_note_type
-# should call createModel with the eight FULL_MODE_FIELDS as inOrderFields, so a fresh Anki
-# profile ends up with a note type matching what _build_fields sends in "full" mode.
-def test_ensure_full_mode_note_type_creates_missing_note_type(monkeypatch):
-    monkeypatch.setattr("backend.anki.NOTE_TYPE", "Japanese")
+# When the given note type is missing from AnkiConnect's modelNames result,
+# _ensure_note_type should call createModel with the given fields as inOrderFields, so a
+# fresh Anki profile ends up with a note type matching what the matching _build_*_fields
+# function sends in "full" mode.
+def test_ensure_note_type_creates_missing_note_type(monkeypatch):
     model_names_response = MagicMock()
     model_names_response.json.return_value = {"result": ["Basic"], "error": None}
     create_model_response = MagicMock()
@@ -230,7 +239,7 @@ def test_ensure_full_mode_note_type_creates_missing_note_type(monkeypatch):
         "backend.anki.requests.post",
         side_effect=[model_names_response, create_model_response],
     ) as mock_post:
-        _ensure_full_mode_note_type()
+        _ensure_note_type("Japanese", FULL_MODE_FIELDS, "Expression")
 
     assert mock_post.call_count == 2
     payload = mock_post.call_args_list[1].kwargs["json"]
@@ -281,3 +290,149 @@ def test_export_card_does_not_check_note_type_in_basic_mode(sample_export_reques
 
     mock_post.assert_called_once()
     assert mock_post.call_args.kwargs["json"]["action"] == "addNote"
+
+
+def test_export_card_merges_tags_into_addnote(sample_export_request, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    sample_export_request.tags = ["N2::Vocab"]
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": 1, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        export_card(sample_export_request)
+
+    note = mock_post.call_args.kwargs["json"]["params"]["note"]
+    assert note["tags"] == ["anki-tool-v2", "N2::Vocab"]
+    # card.tags defaults to [] (see ExportRequest in backend/models.py), so every
+    # existing caller that never sets it keeps getting exactly today's
+    # ["anki-tool-v2"]-only tag list- this test just confirms the additive case works.
+
+
+# ---------------------------------------------------------------------------
+# Dataset-driven export (Vocab/Grammar/Reading)- _add_note_checked and the three
+# export_*_card functions built on it. None of these go through Postgres/word_id/
+# updateNoteFields (see CLAUDE.md)- every export here is a fresh addNote, with
+# AnkiConnect's own allowDuplicate:False standing in for duplicate protection.
+# ---------------------------------------------------------------------------
+
+
+def test_add_note_checked_returns_note_id_and_true_on_success():
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": 42, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        note_id, created = _add_note_checked("Basic", {"Front": "x"}, ["N2::Vocab"])
+
+    assert (note_id, created) == (42, True)
+    note = mock_post.call_args.kwargs["json"]["params"]["note"]
+    assert note["tags"] == ["anki-tool-v2", "N2::Vocab"]
+    assert note["options"] == {"allowDuplicate": False}
+
+
+def test_add_note_checked_reports_duplicate_when_anki_returns_null_result():
+    # AnkiConnect's addNote with allowDuplicate: False returns a null "result" (not an
+    # error) when a note whose first/front field already matches one in the note type-
+    # this is what _add_note_checked turns into a clean (None, False) instead of a
+    # broken note id.
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": None, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response):
+        note_id, created = _add_note_checked("Basic", {"Front": "x"}, None)
+
+    assert (note_id, created) == (None, False)
+
+
+def test_build_grammar_fields_folds_into_front_and_back(sample_grammar_card, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    fields = _build_grammar_fields(sample_grammar_card)
+    assert fields["Front"] == "〜ざるを得ない"
+    assert "動詞ない形" in fields["Back"]
+    assert "N2" in fields["Back"]
+
+
+def test_build_grammar_fields_sends_each_field_individually_in_full_mode(
+    sample_grammar_card, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "full")
+    fields = _build_grammar_fields(sample_grammar_card)
+    assert fields == {
+        "Pattern": "〜ざるを得ない",
+        "Connection": "動詞ない形(ない→ざる)+を得ない",
+        "Meaning": "そうする以外に選択肢がないこと。",
+        "Nuance": "やや硬い書き言葉的な表現。",
+        "SimilarPatterns": "〜しかない",
+        "Example": "時間がないので、諦めざるを得ない。",
+        "Jlpt": "N2",
+    }
+
+
+def test_build_reading_fields_folds_into_front_and_back(sample_reading_card, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    fields = _build_reading_fields(sample_reading_card)
+    assert fields["Front"] == "環境問題"
+    assert "海洋汚染" in fields["Back"]
+
+
+def test_export_grammar_card_creates_note_type_and_tags_in_full_mode(
+    sample_grammar_card, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "full")
+    monkeypatch.setattr("backend.anki.GRAMMAR_NOTE_TYPE", "Japanese Grammar Note Type")
+    sample_grammar_card.tags = ["N2::Grammar"]
+
+    model_names_response = MagicMock()
+    model_names_response.json.return_value = {"result": [], "error": None}
+    create_model_response = MagicMock()
+    create_model_response.json.return_value = {"result": {}, "error": None}
+    add_note_response = MagicMock()
+    add_note_response.json.return_value = {"result": 7, "error": None}
+
+    with patch(
+        "backend.anki.requests.post",
+        side_effect=[model_names_response, create_model_response, add_note_response],
+    ) as mock_post:
+        note_id, created = export_grammar_card(sample_grammar_card, sample_grammar_card.tags)
+
+    assert (note_id, created) == (7, True)
+    actions = [call.kwargs["json"]["action"] for call in mock_post.call_args_list]
+    assert actions == ["modelNames", "createModel", "addNote"]
+    note = mock_post.call_args_list[2].kwargs["json"]["params"]["note"]
+    assert note["modelName"] == "Japanese Grammar Note Type"
+    assert note["tags"] == ["anki-tool-v2", "N2::Grammar"]
+
+
+def test_export_grammar_card_reports_duplicate(sample_grammar_card, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": None, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response):
+        note_id, created = export_grammar_card(sample_grammar_card)
+
+    assert (note_id, created) == (None, False)
+
+
+def test_export_reading_card_tags_note(sample_reading_card, monkeypatch):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": 9, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        note_id, created = export_reading_card(sample_reading_card, ["N2::Reading"])
+
+    assert (note_id, created) == (9, True)
+    note = mock_post.call_args.kwargs["json"]["params"]["note"]
+    assert note["tags"] == ["anki-tool-v2", "N2::Reading"]
+    assert note["fields"]["Front"] == "環境問題"
+
+
+def test_export_dataset_vocab_card_uses_vocab_note_type_and_addnote_only(
+    sample_export_request, monkeypatch
+):
+    monkeypatch.setattr("backend.anki.EXPORT_MODE", "basic")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": 3, "error": None}
+    with patch("backend.anki.requests.post", return_value=mock_response) as mock_post:
+        note_id, created = export_dataset_vocab_card(sample_export_request, ["N2::Vocab"])
+
+    assert (note_id, created) == (3, True)
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["action"] == "addNote"
+    assert payload["params"]["note"]["fields"]["Front"] == "大人"
+    assert payload["params"]["note"]["tags"] == ["anki-tool-v2", "N2::Vocab"]

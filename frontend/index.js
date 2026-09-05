@@ -1,13 +1,5 @@
-// Backend address- the Python FastAPI service (backend/main.py), run separately via
-// `uvicorn backend.main:app --port 5000` (see README "Usage"). This frontend is plain
-// static HTML/JS with no build step, so this is just a hardcoded constant rather than
-// something injected by a bundler- change it here directly if the backend ever runs on
-// a different host/port.
 const BACKEND_URL = "http://localhost:5000";
 
-// Grabbing every element this script touches once, up front, by its id in index.html-
-// each of these assumes the matching id actually exists in the page (it does, see
-// index.html), so there's no null-check here before using any of them below.
 const wordInput = document.getElementById("wordInput");
 const generateBtn = document.getElementById("generateBtn");
 const statusBox = document.getElementById("statusBox");
@@ -20,17 +12,7 @@ const rejectBtn = document.getElementById("rejectBtn");
 const accentPicker = document.getElementById("accentPicker");
 const fontPicker = document.getElementById("fontPicker");
 const levelPicker = document.getElementById("levelPicker");
-// Shared by both the single-word and batch flows below- one page-level setting, not a
-// per-flow one, so switching it applies to whichever generation the user triggers next.
 
-// `fields` maps this project's ExportRequest field names (backend/models.py) to the
-// actual <input>/<textarea> elements in index.html's card form. Note the keys here-
-// definition, example, jlpt- rather than definition_ja, example_sentence, jlpt_level.
-// This object is the frontend half of the field-name bridge CLAUDE.md describes: the
-// /generate response comes back in CardDraft's shape (with the _ja/_sentence/_level
-// names), and generateBtn's click handler below reads those into these ExportRequest-
-// named fields directly, so that exportBtn's handler can later post this object's
-// values straight back to /export without any further renaming.
 const fields = {
 	expression: document.getElementById("f-expression"),
 	reading: document.getElementById("f-reading"),
@@ -43,17 +25,7 @@ const fields = {
 };
 
 let currentWordId = null;
-// Not part of `fields` above- word_id isn't a visible/editable form field, it's the
-// Postgres word this card belongs to (see backend/models.py's GenerateResponse). Held
-// here as plain state rather than a hidden form field so exportBtn's handler below can
-// read it without also having to filter it out of `fields`- generateBtn's handler sets
-// this on every response, rejectBtn's handler clears it back to null.
 
-// Small shared helpers for the single-word flow's status message box (index.html's
-// #statusBox)- `type` is expected to be "error" or "info", matching the CSS classes
-// .status.error / .status.info defined in index.html's <style> block, which control
-// both the box's color and whether it's visible at all (plain .status has
-// `display: none`).
 function showStatus(message, type) {
 	statusBox.textContent = message;
 	statusBox.className = `status ${type}`;
@@ -64,12 +36,6 @@ function clearStatus() {
 	statusBox.className = "status";
 }
 
-// Reads a streamed NDJSON response body (backend/main.py's /generate and
-// /generate/batch both return `media_type="application/x-ndjson"`) incrementally,
-// calling `onLine` with each parsed JSON object as soon as its line is complete-
-// rather than waiting for the whole response like `response.json()` would, which is
-// the whole point: it lets progress lines (heartbeat/retry) update the UI before the
-// terminal result line ever arrives.
 async function readNdjsonLines(response, onLine) {
 	const bodyReader = response.body.getReader();
 	const decoder = new TextDecoder();
@@ -78,10 +44,6 @@ async function readNdjsonLines(response, onLine) {
 		const { done, value } = await bodyReader.read();
 		if (done) break;
 		buffer += decoder.decode(value, { stream: true });
-		// { stream: true } tells TextDecoder a multi-byte UTF-8 character (e.g. any
-		// kanji/kana in a word or card field) might be split across this chunk and the
-		// next one, and to hold the split bytes over instead of decoding them as
-		// garbage now.
 
 		let newlineIndex;
 		while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
@@ -92,10 +54,6 @@ async function readNdjsonLines(response, onLine) {
 	}
 }
 
-// Shared stage text for a heartbeat/retry progress event (backend/llm.py's
-// generate_card_with_events)- `hasRetried` is tracked by the caller so the message
-// stays on "Retrying..." for every heartbeat after the retry fires, not just the one
-// event where it happens.
 function progressStageText(event, hasRetried) {
 	if (event.event === "retry" || hasRetried) {
 		return "Retrying- model returned an unexpected word...";
@@ -103,21 +61,9 @@ function progressStageText(event, hasRetried) {
 	return "Waiting for model...";
 }
 
-// Derives the "info" status box's colors (index.html's .status.info, driven by the
-// --info-bg/--info-text custom properties) from whichever accent color the user has
-// picked, instead of the old hardcoded pastel blue- see applyInfoColors below for where
-// this actually gets applied.
 const INFO_BG_LIGHTEN = 12;
-// Percentage points added to the accent's own lightness for the box background- capped
-// so it never quite reaches pure white, since the box still needs to read as distinct
-// from the page background.
 const INFO_BG_MAX_LIGHTNESS = 96;
 const INFO_TEXT_SHIFT = 40;
-// Percentage points the text color moves *away* from the box background- toward black
-// for a light background, toward white for a dark one (see deriveInfoColors below). A
-// fixed same-direction darken (rather than this either-direction shift) would collapse
-// toward unreadable for a very dark accent, where there's little headroom left to darken
-// further- shifting toward whichever end has more room keeps a real gap at both extremes.
 const INFO_TEXT_MIN_LIGHTNESS = 4;
 const INFO_TEXT_MAX_LIGHTNESS = 92;
 
@@ -129,8 +75,6 @@ function hexToRgb(hex) {
 		b: parseInt(clean.slice(4, 6), 16),
 	};
 }
-// `<input type="color">`'s .value is always a 7-character "#rrggbb" hex string- this
-// just splits that into its three byte components and reads each as base-16.
 
 function rgbToHsl(r, g, b) {
 	r /= 255;
@@ -160,11 +104,6 @@ function rgbToHsl(r, g, b) {
 	return { h: h * 360, s: s * 100, l: l * 100 };
 }
 
-// hexToRgb -> rgbToHsl -> (shift lightness) -> hsl() string is the round trip
-// deriveInfoColors below needs- the accent picker only ever hands over a hex string, but
-// shifting "lightness" independently only makes sense in HSL space. No RGB conversion
-// back is needed- the CSS custom properties it sets are handed to the browser as hsl()
-// strings directly.
 
 function deriveInfoColors(accentHex) {
 	const accentRgb = hexToRgb(accentHex);
@@ -174,12 +113,6 @@ function deriveInfoColors(accentHex) {
 	const textLightness = bgLightness >= 50
 		? Math.max(bgLightness - INFO_TEXT_SHIFT, INFO_TEXT_MIN_LIGHTNESS)
 		: Math.min(bgLightness + INFO_TEXT_SHIFT, INFO_TEXT_MAX_LIGHTNESS);
-	// Same hue/saturation as the accent throughout- only lightness moves, so the box
-	// reads as a tint of the accent and the text a contrasting shade of the box. Which
-	// direction the text shifts depends on the box's own lightness (not the original
-	// accent's)- a light box darkens its text, a dark box lightens its text- so the
-	// text always has room to move toward, rather than defaulting to "always darker"
-	// and running out of room for accents that are already near-black.
 
 	return {
 		background: `hsl(${h}, ${s}%, ${bgLightness}%)`,
@@ -194,18 +127,8 @@ function applyInfoColors() {
 }
 
 applyInfoColors();
-// Runs once up front so the info box already matches the default accent (index.html's
-// --accent/#accentPicker both default to #4a6fa5) before the user ever touches the
-// color picker, rather than showing the old hardcoded pastel blue until the first
-// "input" event below.
 
-// Live theming: these two listeners don't touch the backend at all- they just let the
-// user restyle the page instantly as they interact with the color/font pickers.
 accentPicker.addEventListener("input", () => {
-	// Setting a CSS custom property directly on the root element updates every rule in
-	// index.html's <style> block that references var(--accent) (e.g. the button
-	// background)- no page reload or re-render needed, the browser recomputes styles
-	// as soon as the property changes.
 	document.documentElement.style.setProperty("--accent", accentPicker.value);
 	applyInfoColors();
 });
@@ -217,24 +140,16 @@ fontPicker.addEventListener("change", () => {
 generateBtn.addEventListener("click", async () => {
 	const word = wordInput.value.trim();
 	if (!word) return;
-	// Silently does nothing on an empty/whitespace-only input, rather than showing an
-	// error- there's no dedicated "please enter a word" message for this case.
 
 	clearStatus();
 	cardBox.classList.remove("visible");
 	generateBtn.disabled = true;
 	generateBtn.textContent = "Generating...";
-	// Hiding any previously-shown card and disabling the button up front prevents a
-	// user from double-submitting while a request is already in flight, and stops a
-	// stale card from a previous word remaining visible while a new one generates.
 
 	showStatus(
 		"Generating... structured JSON output can take a while (up to a few minutes)- see README Troubleshooting if it seems stuck.",
 		"info",
 	);
-	// Overwritten later by the duplicate-card message (below) or the error message
-	// (catch block) once the response actually comes back- this is just a heads-up for
-	// the wait itself, matching ROADMAP.md's previously-proposed slow-generation warning.
 
 	const requestStart = Date.now();
 	let hasRetried = false;
@@ -244,10 +159,6 @@ generateBtn.addEventListener("click", async () => {
 	const elapsedTicker = setInterval(() => {
 		generateElapsed.textContent = `${Math.floor((Date.now() - requestStart) / 1000)}s`;
 	}, 1000);
-	// Ticks the elapsed-time display locally every second- driven by wall-clock time
-	// rather than waiting on the next heartbeat event, so the number keeps moving
-	// smoothly between the ~2.5s server-pushed heartbeats (see backend/llm.py's
-	// HEARTBEAT_INTERVAL_S).
 
 	try {
 		const response = await fetch(`${BACKEND_URL}/generate`, {
@@ -259,25 +170,13 @@ generateBtn.addEventListener("click", async () => {
 				mode: document.querySelector('input[name="genMode"]:checked').value,
 			}),
 		});
-		// Matches GenerateRequest's shape in backend/models.py: `word` plus which JLPT
-		// level to cater the generated Japanese to, plus which generation mode to use.
 
 		if (!response.ok) {
 			throw new Error("bad-response");
 		}
-		// fetch() only rejects on a genuine network failure (e.g. the backend isn't
-		// running at all)- a non-2xx status still resolves normally, so response.ok
-		// (true only for 2xx statuses) has to be checked explicitly and turned into a
-		// thrown error to be caught by the catch block below. backend/main.py's
-		// /generate route always responds 200 now (even on an LLM failure- see the
-		// "error" event handled below), so this only fires on a genuine backend-side
-		// crash before any streaming starts.
 
 		let sawTerminalEvent = false;
 		await readNdjsonLines(response, (event) => {
-			// backend/main.py's /generate route now streams NDJSON event lines
-			// (backend/llm.py's generate_card_with_events) instead of one JSON body-
-			// see the event schema in backend/main.py's _stream_generate_result.
 			if (event.event === "heartbeat" || event.event === "retry") {
 				if (event.event === "retry") hasRetried = true;
 				generateProgress.classList.add("visible");
@@ -288,29 +187,12 @@ generateBtn.addEventListener("click", async () => {
 			if (event.event === "error") {
 				sawTerminalEvent = true;
 				showStatus(event.detail, "error");
-				// Surfaces the actual LLMError text now that a generation failure is an
-				// in-band event rather than an HTTP 502- more specific than the generic
-				// catch-block message below, matching how the batch flow already
-				// surfaces backend-provided error detail.
 				return;
 			}
 
-			// event.event === "result"
 			sawTerminalEvent = true;
 			const card = event.card;
 			currentWordId = event.word_id;
-			// Captured here, before anything else touches `event`- this is the one place
-			// the backend ever tells the frontend which word this card is (see the
-			// "result" event's schema in backend/main.py). exportBtn's handler below
-			// reads currentWordId when the user eventually clicks Export, whether or not
-			// they edited any fields first. This is the field-name bridge in action: the
-			// keys on the right (card.expression, card.reading, card.definition_ja, ...)
-			// are CardDraft's field names exactly as the "result" event carries them,
-			// while the `fields.*` targets on the left are this project's
-			// ExportRequest-shaped form fields (see the `fields` object above)-
-			// definition_ja becomes fields.definition, example_sentence becomes
-			// fields.example, jlpt_level becomes fields.jlpt. synonyms/antonyms are
-			// named the same on both sides, so those two just pass straight through.
 			fields.expression.value = card.expression ?? word;
 			fields.reading.value = card.reading ?? "";
 			fields.definition.value = card.definition_ja ?? "";
@@ -319,12 +201,6 @@ generateBtn.addEventListener("click", async () => {
 			fields.antonyms.value = card.antonyms ?? "";
 			fields.example.value = card.example_sentence ?? "";
 			fields.jlpt.value = card.jlpt_level ?? "";
-			// `??` is the nullish-coalescing operator- it falls back to the right-hand value
-			// only when the left side is specifically null or undefined (unlike `||`, which
-			// would also fall back on an empty string or 0). `card.expression ?? word` falls
-			// back to the word the user actually typed if the backend response is somehow
-			// missing that field; the rest fall back to an empty string so a missing field
-			// shows a blank, editable box instead of the literal text "undefined".
 
 			if (event.duplicate) {
 				showStatus(
@@ -332,28 +208,13 @@ generateBtn.addEventListener("click", async () => {
 					"info",
 				);
 			}
-			// A minimal, non-blocking heads-up for now: duplicate=true means these fields came
-			// from Postgres rather than a fresh OpenRouter call (see backend/main.py). The
-			// fuller cancel-vs-edit decision flow described in ARCHITECTURE.md is a separate,
-			// not-yet-built step- this just stops the duplicate case from looking identical to
-			// a freshly generated card with no indication anything different happened.
 
 			cardBox.classList.add("visible");
-			// .card.visible is what actually makes this box render at all- see index.html's
-			// <style>, where plain .card has `display: none`.
 		});
 		if (!sawTerminalEvent) {
-			// The stream ended (e.g. the backend crashed mid-response) without ever
-			// sending a terminal "result" or "error" line- treat that the same as the
-			// generic network-failure message below, since nothing more specific is
-			// known about what went wrong.
 			throw new Error("bad-response");
 		}
 	} catch (err) {
-		// Mirrors the LLM parsing/backend failure messaging described in PROJECT.md.
-		// This can no longer mean "the LLM call itself failed"- that's now the in-band
-		// "error" event handled above- so this generic message is reserved for genuine
-		// network/connectivity failures.
 		showStatus(
 			"Failed to reach the backend or parse its response. Is the Python service running?",
 			"error",
@@ -361,9 +222,6 @@ generateBtn.addEventListener("click", async () => {
 	} finally {
 		generateBtn.disabled = false;
 		generateBtn.textContent = "Generate";
-		// `finally` runs whether the try block succeeded or the catch block ran- this is
-		// what re-enables the button either way, so a failed request doesn't leave it
-		// stuck disabled.
 		clearInterval(elapsedTicker);
 		generateProgress.classList.remove("visible");
 	}
@@ -375,9 +233,6 @@ rejectBtn.addEventListener("click", () => {
 	clearStatus();
 	currentWordId = null;
 });
-// Discarding a card never contacts the backend at all- the draft only ever existed in
-// the form fields client-side, so "rejecting" it is just hiding the box and resetting
-// the input for the next word.
 
 exportBtn.addEventListener("click", async () => {
 	const payload = {
@@ -386,17 +241,6 @@ exportBtn.addEventListener("click", async () => {
 		),
 		word_id: currentWordId,
 	};
-	// Object.entries(fields) turns {expression: <input>, reading: <input>, ...} into
-	// [["expression", <input>], ["reading", <input>], ...]; .map(...) replaces each
-	// element with its current .value, giving [["expression", "大人"], ...];
-	// Object.fromEntries(...) turns that back into a plain object
-	// {expression: "大人", reading: "おとな", ...}. The net effect: read every field's
-	// live value out of the DOM into one plain object, keyed exactly like ExportRequest
-	// (backend/models.py)- which is why this payload can be sent to /export as-is with
-	// no further renaming, unlike the /generate response above. word_id is spread in
-	// separately since it's not a DOM field (see currentWordId above)- ExportRequest
-	// accepts it as optional, so this is currentWordId's value whether that's a real ID
-	// or still null (e.g. if generation somehow never set it).
 
 	try {
 		const response = await fetch(`${BACKEND_URL}/export`, {
@@ -409,7 +253,6 @@ exportBtn.addEventListener("click", async () => {
 
 		showStatus("Card exported to Anki.", "info");
 	} catch (err) {
-		// Mirrors the AnkiConnect failure messaging described in PROJECT.md.
 		showStatus(
 			"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled.",
 			"error",
@@ -417,9 +260,6 @@ exportBtn.addEventListener("click", async () => {
 	}
 });
 
-// Batch upload (.txt) flow below- a separate set of elements/status box from the
-// single-word flow above, since both sections are shown on the page at the same time
-// and need independent status messages.
 const fileInput = document.getElementById("fileInput");
 const batchGenerateBtn = document.getElementById("batchGenerateBtn");
 const batchStatusBox = document.getElementById("batchStatusBox");
@@ -438,14 +278,9 @@ function clearBatchStatus() {
 	batchStatusBox.className = "status";
 }
 
-// Builds one carousel card's DOM subtree for a single BatchCardResult (see
-// backend/models.py)- called once per entry in the /generate/batch response.
 function buildCarouselCard(result) {
 	const card = document.createElement("div");
 	card.className = "carousel-card" + (result.error ? " error" : "");
-	// This function builds elements directly via document.createElement rather than
-	// using an HTML <template>- there's no templating in this project at all, so every
-	// piece of a carousel card (label, fields, buttons) is assembled by hand below.
 
 	const label = document.createElement("div");
 	label.className = "word-label";
@@ -459,20 +294,8 @@ function buildCarouselCard(result) {
 			"This word already has a saved card- showing the existing one.";
 		card.appendChild(duplicateBanner);
 	}
-	// Mirrors the single-word flow's showStatus(..., "info") call above for data.duplicate-
-	// reuses the same .status.info CSS class (frontend/index.html) instead of a new one.
-	// A duplicate result still has a populated result.card (backend/main.py's /generate/batch
-	// route reassembles it from Postgres, same as /generate), so the fields/buttons below
-	// build exactly as they would for a freshly generated card- this banner is the only
-	// difference the user sees.
 
 	const cardWordId = result.word_id ?? null;
-	// Mirrors currentWordId in the single-word flow above, just scoped to this one
-	// carousel card via closure instead of a shared module-level variable- each card
-	// needs its own, since a batch response can carry a different word_id per result
-	// (backend/models.py's BatchCardResult). Falls back to null the same way a missing/
-	// failed generation would, so a card built before this field existed (or for a word
-	// that somehow has no card) still posts a valid ExportRequest.word_id.
 
 	if (result.error) {
 		const errorText = document.createElement("div");
@@ -488,15 +311,8 @@ function buildCarouselCard(result) {
 		card.appendChild(retryHint);
 
 		return card;
-		// Early return- a failed word gets its word label, the error message, and a
-		// retry hint, never the editable fields or Discard/Export buttons below, since
-		// there's no card content to review or export for a word that failed to generate.
 	}
 
-	// fieldDefs pairs each ExportRequest-shaped key with its display label and which
-	// HTML tag to build for it ("input" for single-line fields, "textarea" for the
-	// longer free-text ones)- driving the loop below instead of repeating near-identical
-	// field-building code eight times by hand.
 	const fieldDefs = [
 		["expression", "Expression", "input"],
 		["reading", "Reading", "input"],
@@ -508,12 +324,6 @@ function buildCarouselCard(result) {
 		["jlpt", "JLPT Level", "input"],
 	];
 
-	// Same field-name bridge as generateBtn's handler above, just applied to a batch
-	// result's card instead of a single /generate response- result.card is CardDraft-
-	// shaped (definition_ja, example_sentence, jlpt_level), mapped here into the
-	// ExportRequest-shaped keys (definition, example, jlpt) that fieldDefs and the
-	// eventual /export payload both use. synonyms/antonyms pass straight through, same
-	// reasoning as generateBtn's handler above.
 	const values = {
 		expression: result.card.expression,
 		reading: result.card.reading,
@@ -535,16 +345,8 @@ function buildCarouselCard(result) {
 		fieldWrap.appendChild(fieldLabel);
 
 		const input = document.createElement(tag);
-		// `tag` here is the string "input" or "textarea" from fieldDefs- passing a
-		// variable to document.createElement works the same as writing the tag name
-		// literally, so this one line creates either kind of element depending on
-		// which field is currently being built.
 		input.value = values[key];
 		cardFields[key] = input;
-		// Every created field element is kept in `cardFields`, keyed the same way as
-		// `values`- this is what lets the Export button below read each field's
-		// (possibly user-edited) live value back out later, the same way the
-		// single-word flow's `fields` object works at the top of this file.
 		fieldWrap.appendChild(input);
 
 		card.appendChild(fieldWrap);
@@ -557,8 +359,6 @@ function buildCarouselCard(result) {
 	discardBtn.className = "secondary";
 	discardBtn.textContent = "Discard";
 	discardBtn.addEventListener("click", () => card.remove());
-	// card.remove() just deletes this one carousel card's DOM subtree from the page-
-	// nothing is sent to the backend, same as the single-word flow's rejectBtn.
 
 	const cardExportBtn = document.createElement("button");
 	cardExportBtn.textContent = "Export to Anki";
@@ -569,14 +369,6 @@ function buildCarouselCard(result) {
 			),
 			word_id: cardWordId,
 		};
-		// Same Object.entries -> map -> Object.fromEntries pattern as exportBtn's handler
-		// above, just reading from this card's own `cardFields` (a closure variable
-		// captured from the loop above) instead of the single-word flow's shared `fields`.
-		// word_id spread in the same way exportBtn's handler does it- now that backend/
-		// main.py's /generate/batch route persists each successful card and returns a
-		// word_id (see backend/models.py's BatchCardResult), a batch export can be tracked/
-		// updated via get_latest_export/record_export too, instead of always being a bare
-		// addNote with nothing recorded.
 
 		try {
 			const response = await fetch(`${BACKEND_URL}/export`, {
@@ -589,10 +381,6 @@ function buildCarouselCard(result) {
 
 			cardExportBtn.textContent = "Exported";
 			cardExportBtn.disabled = true;
-			// Unlike the single-word flow, a successfully-exported batch card stays
-			// visible with its button relabeled and disabled, rather than being hidden-
-			// each card in the carousel is independent, so there's no single shared
-			// status box position that would make sense to clear here.
 		} catch (err) {
 			showBatchStatus(
 				"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled.",
@@ -616,8 +404,6 @@ batchGenerateBtn.addEventListener("click", () => {
 	carousel.innerHTML = "";
 	batchGenerateBtn.disabled = true;
 	batchGenerateBtn.textContent = "Generating...";
-	// carousel.innerHTML = "" wipes out any cards left over from a previous batch
-	// upload before the new one's results are appended below.
 
 	showBatchStatus(
 		"Generating... structured JSON output can take a while per word (up to a few minutes each)- see README Troubleshooting if it seems stuck.",
@@ -625,14 +411,7 @@ batchGenerateBtn.addEventListener("click", () => {
 	);
 
 	const reader = new FileReader();
-	// FileReader reads the uploaded file's contents entirely client-side- the raw text
-	// is read here in the browser and sent to the backend as a JSON string field
-	// (file_content, matching BatchGenerateRequest in backend/models.py), rather than
-	// the file itself being uploaded as multipart form data.
 	reader.onload = async () => {
-		// reader.onload fires once the file has finished being read into memory-
-		// everything that depends on the file's contents (reader.result) has to happen
-		// inside this callback, since reading a file is asynchronous.
 		try {
 			const response = await fetch(`${BACKEND_URL}/generate/batch`, {
 				method: "POST",
@@ -645,39 +424,16 @@ batchGenerateBtn.addEventListener("click", () => {
 			});
 
 			if (!response.ok) {
-				// A 400 (bad batch file) is a normal, non-streamed JSON body with a
-				// "detail" message (see backend/main.py)- that only holds on the error
-				// path, since a *successful* response's body is newline-delimited JSON
-				// instead (handled below), not one JSON document response.json() could
-				// parse. `.catch(() => null)` guards against a body that isn't valid
-				// JSON at all, falling back to null rather than letting that parsing
-				// failure escape as its own uncaught error.
 				const data = await response.json().catch(() => null);
 				throw new Error(data?.detail || "bad-response");
-				// `data?.detail` is optional chaining- it safely reads `.detail` only if
-				// `data` isn't null/undefined, evaluating to undefined instead of throwing
-				// if `data` came back null from the .catch() above. `|| "bad-response"`
-				// then falls back to that generic sentinel value if there was no usable
-				// detail message to show.
 			}
 
 			let total = null;
 			let progressIndex = null;
 			let hasRetried = false;
-			// response.body is a ReadableStream of raw bytes- readNdjsonLines()
-			// decodes/splits it into complete lines incrementally as they arrive over
-			// the wire, rather than waiting for the whole response like response.json()
-			// would. progressIndex/hasRetried track which word a heartbeat/retry event
-			// belongs to, so the "Retrying..." stage text resets when generation moves
-			// on to the next word.
 
 			await readNdjsonLines(response, (event) => {
 				if ("event" in event) {
-					// A heartbeat/retry tick for a still-in-flight word (see
-					// backend/llm.py's generate_card_with_events, merged with
-					// word/index in backend/main.py's _stream_batch_results)- doesn't
-					// carry "result" or a bare "total", so it has to be checked before
-					// either of those shape checks below.
 					if (event.index !== progressIndex) {
 						progressIndex = event.index;
 						hasRetried = false;
@@ -692,9 +448,6 @@ batchGenerateBtn.addEventListener("click", () => {
 				}
 
 				if (!("result" in event)) {
-					// The leading {"total": N} line (see backend/main.py)- always the
-					// first line, but checked by shape rather than position so this
-					// loop doesn't have to track "is this the first line?" separately.
 					total = event.total;
 					showBatchStatus(`Generating... 0/${total} done.`, "info");
 					return;
@@ -709,16 +462,7 @@ batchGenerateBtn.addEventListener("click", () => {
 					"info",
 				);
 				batchProgress.classList.remove("visible");
-				// This word is done (whether it succeeded or failed)- hide the
-				// per-word progress bar until the next word's first heartbeat/retry
-				// tick shows it again (skipped entirely for a Postgres duplicate,
-				// which resolves with no LLM call at all).
 			});
-			// One buildCarouselCard() call, and one appended card, per word in the
-			// original uploaded file, in the same order- backend/main.py's
-			// _stream_batch_results streams results in file order even though a
-			// duplicate word resolves near-instantly while a freshly-generated one can
-			// take minutes, so no reordering is needed here.
 		} catch (err) {
 			showBatchStatus(
 				err.message && err.message !== "bad-response"
@@ -726,12 +470,6 @@ batchGenerateBtn.addEventListener("click", () => {
 					: "Failed to reach the backend. Is the Python service running?",
 				"error",
 			);
-			// Shows the backend's actual validation message (e.g. "File contains 13 words
-			// - the limit is 12 per file.") when one was available, but falls back to a
-			// generic connectivity message specifically when err.message is the
-			// "bad-response" sentinel thrown above (or missing entirely)- that sentinel is
-			// what signals "we got a non-2xx response with no usable detail message",
-			// as opposed to a real backend-provided error string.
 		} finally {
 			batchGenerateBtn.disabled = false;
 			batchGenerateBtn.textContent = "Generate from File";
@@ -739,6 +477,243 @@ batchGenerateBtn.addEventListener("click", () => {
 		}
 	};
 	reader.readAsText(file);
-	// Kicks off the actual (asynchronous) file read- reader.onload above only fires
-	// once this completes.
 });
+
+const datasetSection = document.getElementById("datasetSection");
+const datasetGenerateBtn = document.getElementById("datasetGenerateBtn");
+const datasetStatusBox = document.getElementById("datasetStatusBox");
+const datasetProgress = document.getElementById("datasetProgress");
+const datasetStage = document.getElementById("datasetStage");
+const datasetElapsed = document.getElementById("datasetElapsed");
+const datasetCarousel = document.getElementById("datasetCarousel");
+
+function showDatasetStatus(message, type) {
+	datasetStatusBox.textContent = message;
+	datasetStatusBox.className = `status ${type}`;
+}
+
+function clearDatasetStatus() {
+	datasetStatusBox.textContent = "";
+	datasetStatusBox.className = "status";
+}
+
+const DATASET_SECTION_CONFIG = {
+	vocab: {
+		exportPath: "/export/dataset-vocab",
+		tag: "N2::Vocab",
+		fieldDefs: [
+			["expression", "Expression", "input"],
+			["reading", "Reading", "input"],
+			["definition", "Monolingual Definition", "textarea"],
+			["nuance", "Nuance", "textarea"],
+			["synonyms", "Synonyms", "textarea"],
+			["antonyms", "Antonyms", "textarea"],
+			["example", "Example Sentence", "textarea"],
+			["jlpt", "JLPT Level", "input"],
+		],
+		values: (card) => ({
+			expression: card.expression,
+			reading: card.reading,
+			definition: card.definition_ja,
+			nuance: card.nuance,
+			synonyms: card.synonyms,
+			antonyms: card.antonyms,
+			example: card.example_sentence,
+			jlpt: card.jlpt_level,
+		}),
+	},
+	grammar: {
+		exportPath: "/export/grammar",
+		tag: "N2::Grammar",
+		fieldDefs: [
+			["pattern", "Pattern", "input"],
+			["connection", "Connection", "input"],
+			["meaning", "Meaning", "textarea"],
+			["nuance", "Nuance", "textarea"],
+			["similar_patterns", "Similar Patterns", "textarea"],
+			["example_sentence", "Example Sentence", "textarea"],
+			["jlpt_level", "JLPT Level", "input"],
+		],
+		values: (card) => ({ ...card }),
+	},
+	reading: {
+		exportPath: "/export/reading",
+		tag: "N2::Reading",
+		fieldDefs: [
+			["topic", "Topic", "input"],
+			["passage", "Passage", "textarea"],
+			["question", "Question", "textarea"],
+			["answer", "Answer", "textarea"],
+			["vocab_notes", "Vocab Notes", "textarea"],
+			["jlpt_level", "JLPT Level", "input"],
+		],
+		values: (card) => ({ ...card }),
+	},
+};
+
+function buildDatasetCarouselCard(result) {
+	const config = DATASET_SECTION_CONFIG[result.section];
+	const card = document.createElement("div");
+	card.className = "carousel-card" + (result.error ? " error" : "");
+
+	const label = document.createElement("div");
+	label.className = "word-label";
+	label.textContent = result.item;
+	card.appendChild(label);
+
+	if (result.error) {
+		const errorText = document.createElement("div");
+		errorText.textContent = result.error;
+		card.appendChild(errorText);
+
+		const retryHint = document.createElement("div");
+		retryHint.className = "retry-hint";
+		retryHint.textContent =
+			"Try generating this dataset again- a solo request sometimes succeeds " +
+			"where an entry failed (malformed JSON, transient API error, etc).";
+		card.appendChild(retryHint);
+
+		return card;
+	}
+
+	const values = config.values(result.card);
+	const cardFields = {};
+	for (const [key, labelText, tag] of config.fieldDefs) {
+		const fieldWrap = document.createElement("div");
+		fieldWrap.className = "field";
+
+		const fieldLabel = document.createElement("label");
+		fieldLabel.textContent = labelText;
+		fieldWrap.appendChild(fieldLabel);
+
+		const input = document.createElement(tag);
+		input.value = values[key];
+		cardFields[key] = input;
+		fieldWrap.appendChild(input);
+
+		card.appendChild(fieldWrap);
+	}
+
+	const actions = document.createElement("div");
+	actions.className = "card-actions";
+
+	const discardBtn = document.createElement("button");
+	discardBtn.className = "secondary";
+	discardBtn.textContent = "Discard";
+	discardBtn.addEventListener("click", () => card.remove());
+
+	const cardExportBtn = document.createElement("button");
+	cardExportBtn.textContent = "Export to Anki";
+	cardExportBtn.addEventListener("click", async () => {
+		const payload = {
+			...Object.fromEntries(
+				Object.entries(cardFields).map(([key, el]) => [key, el.value]),
+			),
+			tags: [config.tag],
+		};
+
+		try {
+			const response = await fetch(`${BACKEND_URL}${config.exportPath}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+
+			if (!response.ok) throw new Error("export-failed");
+
+			const data = await response.json();
+			cardExportBtn.textContent = data.status === "duplicate" ? "Already in Anki" : "Exported";
+			cardExportBtn.disabled = true;
+		} catch (err) {
+			showDatasetStatus(
+				"Unable to reach Anki. Please ensure Anki is running with the AnkiConnect add-on enabled.",
+				"error",
+			);
+		}
+	});
+
+	actions.appendChild(discardBtn);
+	actions.appendChild(cardExportBtn);
+	card.appendChild(actions);
+
+	return card;
+}
+
+datasetGenerateBtn.addEventListener("click", async () => {
+	const section = datasetSection.value;
+
+	clearDatasetStatus();
+	datasetCarousel.innerHTML = "";
+	datasetGenerateBtn.disabled = true;
+	datasetGenerateBtn.textContent = "Generating...";
+
+	showDatasetStatus(
+		"Generating... structured JSON output can take a while per item (up to a few minutes each)- see README Troubleshooting if it seems stuck.",
+		"info",
+	);
+
+	try {
+		const response = await fetch(`${BACKEND_URL}/generate/dataset`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				section,
+				level: "N2",
+				mode: document.querySelector('input[name="genMode"]:checked').value,
+			}),
+		});
+
+		if (!response.ok) {
+			const data = await response.json().catch(() => null);
+			throw new Error(data?.detail || "bad-response");
+		}
+
+		let total = null;
+		let progressIndex = null;
+		let hasRetried = false;
+
+		await readNdjsonLines(response, (event) => {
+			if ("event" in event) {
+				if (event.index !== progressIndex) {
+					progressIndex = event.index;
+					hasRetried = false;
+				}
+				if (event.event === "retry") hasRetried = true;
+				datasetProgress.classList.add("visible");
+				datasetStage.textContent =
+					`"${event.item}" (${event.index + 1}/${total ?? "?"}) - ` +
+					progressStageText(event, hasRetried);
+				datasetElapsed.textContent = `${event.elapsed_s}s`;
+				return;
+			}
+
+			if (!("result" in event)) {
+				total = event.total;
+				showDatasetStatus(`Generating... 0/${total} done.`, "info");
+				return;
+			}
+
+			const completed = event.completed;
+			total = event.total;
+			datasetCarousel.appendChild(buildDatasetCarouselCard(event.result));
+			showDatasetStatus(
+				`Generating... ${completed}/${total} done. Each item can take up ` +
+					"to a few minutes- see README Troubleshooting if it seems stuck.",
+				"info",
+			);
+			datasetProgress.classList.remove("visible");
+		});
+	} catch (err) {
+		showDatasetStatus(
+			err.message && err.message !== "bad-response"
+				? err.message
+				: "Failed to reach the backend. Is the Python service running?",
+			"error",
+		);
+	} finally {
+		datasetGenerateBtn.disabled = false;
+		datasetGenerateBtn.textContent = "Generate from Dataset";
+		datasetProgress.classList.remove("visible");
+	}
+});
+

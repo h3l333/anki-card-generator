@@ -1,60 +1,48 @@
 import os
-# os.getenv reads environment variables- used below so AnkiConnect's URL, deck name,
-# and note type can all be overridden without touching this file (see README Configuration).
 
 import requests
-# The same `requests` library backend/llm.py uses for OpenRouter- here it's the HTTP
-# client used to talk to AnkiConnect instead.
 
-from backend.models import ExportRequest
+from backend.models import ExportRequest, GrammarCard, ReadingCard
 
 ANKICONNECT_URL = os.getenv("ANKICONNECT_URL", "http://localhost:8765")
 DECK_NAME = os.getenv("ANKI_DECK_NAME", "Japanese")
 EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "full")
-# "full" (default) sends each field individually for a custom note type with matching
-# field names, auto-created via createModel if missing (see _ensure_full_mode_note_type
-# below)- zero setup burden now that that auto-create exists, and it's the richer export
-# (all eight fields land in Anki, not just two). "basic" folds all eight fields into
-# Front/Back instead, for Anki's stock "Basic" note type (see README Configuration). Any
-# other value is a config mistake, not a mode to silently fall back from- _build_fields
-# raises on it below.
 
 def _default_note_type(export_mode: str) -> str:
-    # Only ANKI_NOTE_TYPE itself overrides the result of this- the default depends on
-    # export_mode so "full" mode works with zero note-type config too: "Japanese Note
-    # Type" doesn't collide with Anki's stock "Basic", so _ensure_full_mode_note_type
-    # (below) auto-creates it via createModel on first export instead of the user having
-    # to pick and set a name first.
     return "Japanese Note Type" if export_mode == "full" else "Basic"
 
 
 NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", _default_note_type(EXPORT_MODE))
-# os.getenv("NAME", default) returns the environment variable's value if it's set, or
-# the given default otherwise- so these constants work out of the box for a fresh install
-# (default Anki deck/note type, default AnkiConnect port) while still being overridable
-# per-user without any code change.
 
 
 class AnkiConnectError(Exception):
     """Raised when AnkiConnect is unreachable or returns an error."""
-    # backend/main.py's /export route catches this specifically and turns it into an
-    # HTTP 503 response- see the two distinct raise sites in export_card() below for
-    # the two different situations this same exception type covers.
 
 
 FULL_MODE_FIELDS = [
     "Expression", "Reading", "Definition", "Nuance",
     "Synonyms", "Antonyms", "Example", "Jlpt",
 ]
-# Same field names _build_fields uses for "full" mode below- pulled out to a module-level
-# constant so _ensure_full_mode_note_type can pass them to AnkiConnect's createModel
-# without repeating the list a second time.
+
+GRAMMAR_NOTE_TYPE = os.getenv(
+    "ANKI_GRAMMAR_NOTE_TYPE",
+    "Japanese Grammar Note Type" if EXPORT_MODE == "full" else "Basic",
+)
+READING_NOTE_TYPE = os.getenv(
+    "ANKI_READING_NOTE_TYPE",
+    "Japanese Reading Note Type" if EXPORT_MODE == "full" else "Basic",
+)
+
+GRAMMAR_FULL_MODE_FIELDS = [
+    "Pattern", "Connection", "Meaning", "Nuance",
+    "SimilarPatterns", "Example", "Jlpt",
+]
+READING_FULL_MODE_FIELDS = [
+    "Topic", "Passage", "Question", "Answer", "VocabNotes", "Jlpt",
+]
 
 
 def _post_to_ankiconnect(action: str, params: dict) -> dict:
-    # Every AnkiConnect call in this module (modelNames, createModel, addNote,
-    # updateNoteFields) shares the same request envelope, transport-error handling, and
-    # logical-error handling- centralized here instead of repeated at each call site.
     try:
         response = requests.post(
             ANKICONNECT_URL,
@@ -73,30 +61,22 @@ def _post_to_ankiconnect(action: str, params: dict) -> dict:
     return data
 
 
-def _ensure_full_mode_note_type() -> None:
-    # "full" mode targets a custom note type (ANKI_NOTE_TYPE) that AnkiConnect's
-    # addNote/updateNoteFields will happily fail on with a not-very-actionable error if it
-    # doesn't exist yet, or doesn't have the fields _build_fields tries to fill. Creating it
-    # up front via AnkiConnect's own createModel action lets "full" mode work against a
-    # stock Anki profile without the user having to hand-build the note type first.
+def _ensure_note_type(note_type: str, fields: list[str], front_field: str) -> None:
     data = _post_to_ankiconnect("modelNames", {})
-    if NOTE_TYPE in data["result"]:
-        # Already exists- leave it alone. createModel has no "update" mode, and this
-        # should never silently overwrite a note type the user may have customized
-        # (templates, styling, extra fields beyond the eight expected here).
+    if note_type in data["result"]:
         return
 
-    back_fields = "<br>".join(f"{{{{{field}}}}}" for field in FULL_MODE_FIELDS[1:])
+    back_fields = "<br>".join(f"{{{{{field}}}}}" for field in fields if field != front_field)
     _post_to_ankiconnect(
         "createModel",
         {
-            "modelName": NOTE_TYPE,
-            "inOrderFields": FULL_MODE_FIELDS,
+            "modelName": note_type,
+            "inOrderFields": fields,
             "css": ".card { font-family: sans-serif; font-size: 20px; text-align: center; }",
             "cardTemplates": [
                 {
                     "Name": "Card 1",
-                    "Front": "{{Expression}}",
+                    "Front": f"{{{{{front_field}}}}}",
                     "Back": f"{{{{FrontSide}}}}<hr id=answer>{back_fields}",
                 }
             ],
@@ -105,15 +85,7 @@ def _ensure_full_mode_note_type() -> None:
 
 
 def _build_fields(card: ExportRequest) -> dict:
-    # Anki renders card fields as HTML, not plain text- <b> and <br> below are actual
-    # HTML tags, not a formatting convention specific to this project. That's also why
-    # this function returns a plain dict rather than an ExportRequest: AnkiConnect's
-    # own API expects note fields as a {"FieldName": "HTML string"} mapping, keyed by
-    # the exact field names the target note type defines.
     if EXPORT_MODE == "full":
-        # One field per note field, for a custom note type whose field names match
-        # these exactly (see README Configuration)- no folding needed since each piece
-        # of data gets its own field instead of being concatenated into Front/Back.
         return {
             "Expression": card.expression,
             "Reading": card.reading,
@@ -130,9 +102,6 @@ def _build_fields(card: ExportRequest) -> dict:
             f"Invalid ANKI_EXPORT_MODE: {EXPORT_MODE!r} (expected 'basic' or 'full')"
         )
 
-    # "Basic" only has Front/Back- fold the eight card fields into those two
-    # until a custom Japanese note type exists in Anki (see README Configuration).
-    # "Folding" in this context means to combine, flatten or merge multiple pieces of data into fewer containers.
     front = f"{card.expression}"
     back = (
         f"<b>Reading:</b> {card.reading}<br>"
@@ -148,9 +117,7 @@ def _build_fields(card: ExportRequest) -> dict:
 
 def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
     if EXPORT_MODE == "full":
-        # Only "full" mode needs this- "basic" mode targets Anki's stock "Basic" note
-        # type, which always exists, so there's nothing to create.
-        _ensure_full_mode_note_type()
+        _ensure_note_type(NOTE_TYPE, FULL_MODE_FIELDS, "Expression")
 
     if anki_note_id is None:
         action = "addNote"
@@ -160,7 +127,7 @@ def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
                 "modelName": NOTE_TYPE,
                 "fields": _build_fields(card),
                 "options": {"allowDuplicate": False},
-                "tags": ["anki-tool-v2"],
+                "tags": ["anki-tool-v2", *card.tags],
             }
         }
     else:
@@ -171,35 +138,104 @@ def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
                 "fields": _build_fields(card),
             }
         }
-    # anki_note_id is None- the normal case, and the only case before this parameter
-    # existed- means there's no existing Anki note to target, so this builds a fresh
-    # addNote call exactly as before. A caller (backend/main.py's /export route) that
-    # already knows this word has an export history passes the note ID AnkiConnect
-    # assigned last time instead, which switches this to updateNoteFields- AnkiConnect's
-    # own action for overwriting an existing note's fields in place. Note the shape
-    # difference: updateNoteFields only takes {id, fields}, not deckName/modelName/
-    # options/tags- those describe where/how to *create* a note, which doesn't apply
-    # when the note already exists and is just being rewritten.
-    # This whole dict is AnkiConnect's own request contract either way, not something
-    # invented by this project- every AnkiConnect call is a POST with this "action"/
-    # "version"/"params" envelope. "modelName" is AnkiConnect's own term for what this
-    # project (and Anki's UI) calls a "note type"- NOTE_TYPE is passed in under that key
-    # because that's the name the API itself expects, not a naming inconsistency here.
-    # allowDuplicate: False (addNote only) means AnkiConnect will reject rather than
-    # silently accept a note that already exists in the deck- see the raise below for
-    # how that surfaces.
 
     data = _post_to_ankiconnect(action, params)
-    # _post_to_ankiconnect raises AnkiConnectError itself for both a transport failure
-    # (AnkiConnect unreachable) and a logical failure reported inside a normal 200
-    # response (e.g. AnkiConnect rejecting the note as a duplicate)- see its definition
-    # above, and test_export_card_raises_on_anki_error / test_export_card_raises_when_
-    # anki_unreachable in tests/test_anki.py for the two cases.
 
     return data["result"] if anki_note_id is None else anki_note_id
-    # addNote's own "result" is the new note's ID, assigned by Anki- that's the value the
-    # caller needs to persist (see record_export() in backend/db.py) so a *later*
-    # re-export can target this exact note. updateNoteFields' "result" is just null on
-    # success (it doesn't hand back an ID, since the caller already supplied one)- so in
-    # that branch, the note ID to persist is simply the same anki_note_id passed in,
-    # unchanged.
+
+
+
+
+def _build_grammar_fields(card: GrammarCard) -> dict:
+    if EXPORT_MODE == "full":
+        return {
+            "Pattern": card.pattern,
+            "Connection": card.connection,
+            "Meaning": card.meaning,
+            "Nuance": card.nuance,
+            "SimilarPatterns": card.similar_patterns,
+            "Example": card.example_sentence,
+            "Jlpt": card.jlpt_level,
+        }
+
+    if EXPORT_MODE != "basic":
+        raise ValueError(
+            f"Invalid ANKI_EXPORT_MODE: {EXPORT_MODE!r} (expected 'basic' or 'full')"
+        )
+
+    front = f"{card.pattern}"
+    back = (
+        f"<b>Connection:</b> {card.connection}<br>"
+        f"<b>Meaning:</b> {card.meaning}<br>"
+        f"<b>Nuance:</b> {card.nuance}<br>"
+        f"<b>Similar patterns:</b> {card.similar_patterns}<br>"
+        f"<b>Example:</b> {card.example_sentence}<br>"
+        f"<b>JLPT:</b> {card.jlpt_level}"
+    )
+    return {"Front": front, "Back": back}
+
+
+def _build_reading_fields(card: ReadingCard) -> dict:
+    if EXPORT_MODE == "full":
+        return {
+            "Topic": card.topic,
+            "Passage": card.passage,
+            "Question": card.question,
+            "Answer": card.answer,
+            "VocabNotes": card.vocab_notes,
+            "Jlpt": card.jlpt_level,
+        }
+
+    if EXPORT_MODE != "basic":
+        raise ValueError(
+            f"Invalid ANKI_EXPORT_MODE: {EXPORT_MODE!r} (expected 'basic' or 'full')"
+        )
+
+    front = f"{card.topic}"
+    back = (
+        f"<b>Passage:</b> {card.passage}<br>"
+        f"<b>Question:</b> {card.question}<br>"
+        f"<b>Answer:</b> {card.answer}<br>"
+        f"<b>Vocab notes:</b> {card.vocab_notes}<br>"
+        f"<b>JLPT:</b> {card.jlpt_level}"
+    )
+    return {"Front": front, "Back": back}
+
+
+def _add_note_checked(
+    model_name: str, fields: dict, tags: list[str] | None
+) -> tuple[int | None, bool]:
+    data = _post_to_ankiconnect(
+        "addNote",
+        {
+            "note": {
+                "deckName": DECK_NAME,
+                "modelName": model_name,
+                "fields": fields,
+                "options": {"allowDuplicate": False},
+                "tags": ["anki-tool-v2", *(tags or [])],
+            }
+        },
+    )
+    note_id = data["result"]
+    return (note_id, True) if note_id is not None else (None, False)
+
+
+def export_grammar_card(card: GrammarCard, tags: list[str] | None = None) -> tuple[int | None, bool]:
+    if EXPORT_MODE == "full":
+        _ensure_note_type(GRAMMAR_NOTE_TYPE, GRAMMAR_FULL_MODE_FIELDS, "Pattern")
+    return _add_note_checked(GRAMMAR_NOTE_TYPE, _build_grammar_fields(card), tags)
+
+
+def export_reading_card(card: ReadingCard, tags: list[str] | None = None) -> tuple[int | None, bool]:
+    if EXPORT_MODE == "full":
+        _ensure_note_type(READING_NOTE_TYPE, READING_FULL_MODE_FIELDS, "Topic")
+    return _add_note_checked(READING_NOTE_TYPE, _build_reading_fields(card), tags)
+
+
+def export_dataset_vocab_card(
+    card: ExportRequest, tags: list[str] | None = None
+) -> tuple[int | None, bool]:
+    if EXPORT_MODE == "full":
+        _ensure_note_type(NOTE_TYPE, FULL_MODE_FIELDS, "Expression")
+    return _add_note_checked(NOTE_TYPE, _build_fields(card), tags)

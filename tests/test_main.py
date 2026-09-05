@@ -4,8 +4,9 @@ from unittest.mock import ANY, patch
 
 from backend.anki import AnkiConnectError
 from backend.batch import BatchValidationError
+from backend.datasets import DatasetNotFoundError, DatasetValidationError
 from backend.llm import JLPT_LEVEL_DEFAULT
-from backend.models import BatchCardResult, CardDraft
+from backend.models import BatchCardResult, CardDraft, DatasetCardResult, GrammarCard, ReadingCard
 
 # test_main.py doesn't re-test the LLM or Anki logic itself (that's already covered by
 # test_llm.py and test_anki.py)- instead it checks that each route in backend/main.py wires
@@ -663,3 +664,158 @@ def test_generate_export_route_reports_export_error_as_recoverable(
     # AnkiConnect failed- word_id/card are included in the error event specifically so the
     # extension can tell the user this is recoverable via the web frontend's duplicate-word
     # path, unlike a stage="generate" failure where nothing was saved at all.
+
+
+# ---------------------------------------------------------------------------
+# Dataset-driven generation/export (Vocab/Grammar/Reading)- /generate/dataset,
+# /export/grammar, /export/reading, /export/dataset-vocab. None of these touch
+# Postgres (see CLAUDE.md)- every test below that patches db.py functions does so only
+# to assert they're never called, not to exercise them.
+# ---------------------------------------------------------------------------
+
+
+def _read_dataset_stream(response):
+    lines = [json.loads(line) for line in response.text.strip().split("\n")]
+    total = lines[0]["total"]
+    section = lines[0]["section"]
+    results = [line["result"] for line in lines[1:] if "result" in line]
+    return total, section, results
+
+
+def test_generate_dataset_route_returns_results(client, sample_card_json):
+    card = CardDraft(**sample_card_json)
+    result = DatasetCardResult(item="大人", section="vocab", card=card)
+    with (
+        patch("backend.main.datasets.load_section", return_value=[{"word": "大人"}]) as mock_load,
+        patch("backend.main.generate_dataset_batch", return_value=[result]),
+        patch("backend.main.find_word_by_kanji") as mock_find_word,
+        patch("backend.main.insert_word") as mock_insert_word,
+    ):
+        response = client.post("/generate/dataset", json={"section": "vocab"})
+    assert response.status_code == 200
+    total, section, results = _read_dataset_stream(response)
+    assert total == 1
+    assert section == "vocab"
+    assert results[0]["item"] == "大人"
+    assert results[0]["card"]["expression"] == "大人"
+    mock_load.assert_called_once_with(JLPT_LEVEL_DEFAULT, "vocab")
+    mock_find_word.assert_not_called()
+    mock_insert_word.assert_not_called()
+    # No level in the request body- falls back to JLPT_LEVEL_DEFAULT, same as
+    # /generate/batch. find_word_by_kanji/insert_word (Postgres) must never be called
+    # from this route- confirms the "no DB anywhere in this feature" contract.
+
+
+def test_generate_dataset_route_uses_requested_level(client, sample_grammar_card_json):
+    card = GrammarCard(**sample_grammar_card_json)
+    result = DatasetCardResult(item="〜ざるを得ない", section="grammar", card=card)
+    with (
+        patch(
+            "backend.main.datasets.load_section", return_value=[{"pattern": "〜ざるを得ない"}]
+        ) as mock_load,
+        patch("backend.main.generate_dataset_batch", return_value=[result]),
+    ):
+        response = client.post("/generate/dataset", json={"section": "grammar", "level": "N1"})
+    assert response.status_code == 200
+    mock_load.assert_called_once_with("N1", "grammar")
+
+
+def test_generate_dataset_route_maps_not_found_to_404(client):
+    with patch(
+        "backend.main.datasets.load_section", side_effect=DatasetNotFoundError("no file")
+    ):
+        response = client.post("/generate/dataset", json={"section": "reading"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "no file"
+
+
+def test_generate_dataset_route_maps_validation_error_to_400(client):
+    with patch(
+        "backend.main.datasets.load_section", side_effect=DatasetValidationError("bad file")
+    ):
+        response = client.post("/generate/dataset", json={"section": "reading"})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "bad file"
+    # Both mapped before StreamingResponse starts sending bytes, same reasoning as
+    # generate_batch()'s BatchValidationError -> 400 mapping above.
+
+
+def test_generate_dataset_route_passes_through_progress_events(
+    client, sample_grammar_card_json
+):
+    card = GrammarCard(**sample_grammar_card_json)
+    heartbeat = {"event": "heartbeat", "elapsed_s": 1.2, "item": "〜ざるを得ない", "index": 0}
+    result = DatasetCardResult(item="〜ざるを得ない", section="grammar", card=card)
+    with (
+        patch(
+            "backend.main.datasets.load_section", return_value=[{"pattern": "〜ざるを得ない"}]
+        ),
+        patch("backend.main.generate_dataset_batch", return_value=[heartbeat, result]),
+    ):
+        response = client.post("/generate/dataset", json={"section": "grammar"})
+    lines = [json.loads(line) for line in response.text.strip().split("\n")]
+    assert heartbeat in lines
+    # A progress dict (no "result"/"total" key) should pass straight through as its own
+    # NDJSON line, same as _stream_batch_results does for the batch flow.
+
+
+def test_export_grammar_route_returns_exported_status(client, sample_grammar_card):
+    with patch("backend.main.export_grammar_card", return_value=(7, True)) as mock_export:
+        response = client.post(
+            "/export/grammar", json={**sample_grammar_card.model_dump(), "tags": ["N2::Grammar"]}
+        )
+    assert response.status_code == 200
+    assert response.json() == {"status": "exported", "note_id": 7}
+    mock_export.assert_called_once()
+    assert mock_export.call_args.args[1] == ["N2::Grammar"]
+
+
+def test_export_grammar_route_returns_duplicate_status(client, sample_grammar_card):
+    with patch("backend.main.export_grammar_card", return_value=(None, False)):
+        response = client.post("/export/grammar", json=sample_grammar_card.model_dump())
+    assert response.status_code == 200
+    assert response.json() == {"status": "duplicate", "note_id": None}
+
+
+def test_export_grammar_route_maps_anki_error_to_503(client, sample_grammar_card):
+    with patch(
+        "backend.main.export_grammar_card", side_effect=AnkiConnectError("unreachable")
+    ):
+        response = client.post("/export/grammar", json=sample_grammar_card.model_dump())
+    assert response.status_code == 503
+    assert response.json()["detail"] == "unreachable"
+
+
+def test_export_reading_route_returns_exported_status(client, sample_reading_card):
+    with patch("backend.main.export_reading_card", return_value=(9, True)) as mock_export:
+        response = client.post(
+            "/export/reading", json={**sample_reading_card.model_dump(), "tags": ["N2::Reading"]}
+        )
+    assert response.status_code == 200
+    assert response.json() == {"status": "exported", "note_id": 9}
+    assert mock_export.call_args.args[1] == ["N2::Reading"]
+
+
+def test_export_dataset_vocab_route_returns_exported_status(client, sample_export_request):
+    with (
+        patch("backend.main.export_dataset_vocab_card", return_value=(3, True)) as mock_export,
+        patch("backend.main.get_latest_export") as mock_get_latest_export,
+        patch("backend.main.record_export") as mock_record_export,
+    ):
+        payload = {**sample_export_request.model_dump(), "tags": ["N2::Vocab"]}
+        response = client.post("/export/dataset-vocab", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {"status": "exported", "note_id": 3}
+    assert mock_export.call_args.args[1] == ["N2::Vocab"]
+    mock_get_latest_export.assert_not_called()
+    mock_record_export.assert_not_called()
+    # Distinct route from /export- no word_id/export-history lookup at all, confirming
+    # this path never touches Postgres even when GET_latest_export/record_export are
+    # available to be called (they're mocked here purely to assert they aren't).
+
+
+def test_export_dataset_vocab_route_returns_duplicate_status(client, sample_export_request):
+    with patch("backend.main.export_dataset_vocab_card", return_value=(None, False)):
+        response = client.post("/export/dataset-vocab", json=sample_export_request.model_dump())
+    assert response.status_code == 200
+    assert response.json() == {"status": "duplicate", "note_id": None}

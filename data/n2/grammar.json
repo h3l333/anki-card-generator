@@ -1,0 +1,21 @@
+{
+  "section": "grammar",
+  "level": "N2",
+  "items": [
+    {
+      "pattern": "〜ざるを得ない",
+      "connection_hint": "動詞ない形(ない→ざる) + を得ない",
+      "meaning_hint": null
+    },
+    {
+      "pattern": "〜わけにはいかない",
+      "connection_hint": "動詞辞書形/ない形 + わけにはいかない",
+      "meaning_hint": null
+    },
+    {
+      "pattern": "〜あげく",
+      "connection_hint": "動詞た形 + あげく",
+      "meaning_hint": null
+    }
+  ]
+}

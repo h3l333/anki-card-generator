@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 # TestClient "talks" to the FastAPI app the same way a request would.
 from backend import llm
 from backend.main import app
-from backend.models import ExportRequest
+from backend.models import ExportRequest, GrammarCard, ReadingCard
 
 # Import of key modules, objects and classes from backend scripts.
 
@@ -73,3 +73,61 @@ def sample_export_request():
 # fixture is a real ExportRequest instance (not a plain dict), because test_anki.py's
 # _build_fields() and export_card() both expect an actual ExportRequest object with attribute
 # access (card.expression, card.reading, ...), not dictionary keys.
+
+
+@pytest.fixture
+def sample_grammar_card_json():
+    return {
+        "pattern": "〜ざるを得ない",
+        "connection": "動詞ない形(ない→ざる)+を得ない",
+        "meaning": "そうする以外に選択肢がないこと。",
+        "nuance": "やや硬い書き言葉的な表現。",
+        "similar_patterns": "〜しかない",
+        "example_sentence": "時間がないので、諦めざるを得ない。",
+        "jlpt_level": "N2",
+    }
+# Keys match GrammarCard's field names exactly (minus "tags", which the LLM is never
+# asked to produce- see backend/llm.py::_schema_without_tags)- this is the shape an
+# OpenRouter response is expected to parse into, mirroring sample_card_json above but
+# for the grammar generator.
+
+
+@pytest.fixture
+def sample_reading_card_json():
+    return {
+        "topic": "環境問題",
+        "passage": "近年、プラスチックごみによる海洋汚染が深刻な問題となっている。",
+        "question": "この文章の主なテーマは何か。",
+        "answer": "プラスチックごみによる海洋汚染。",
+        "vocab_notes": "海洋汚染: 海がゴミなどで汚れること。",
+        "jlpt_level": "N2",
+    }
+
+
+@pytest.fixture
+def sample_grammar_card():
+    return GrammarCard(
+        pattern="〜ざるを得ない",
+        connection="動詞ない形(ない→ざる)+を得ない",
+        meaning="そうする以外に選択肢がないこと。",
+        nuance="やや硬い書き言葉的な表現。",
+        similar_patterns="〜しかない",
+        example_sentence="時間がないので、諦めざるを得ない。",
+        jlpt_level="N2",
+    )
+# GrammarCard doubles as both the LLM's structured-output schema and the export request
+# body (see backend/models.py)- this fixture is what backend/anki.py's
+# _build_grammar_fields()/export_grammar_card() tests exercise, mirroring
+# sample_export_request's role for the vocab pair above.
+
+
+@pytest.fixture
+def sample_reading_card():
+    return ReadingCard(
+        topic="環境問題",
+        passage="近年、プラスチックごみによる海洋汚染が深刻な問題となっている。",
+        question="この文章の主なテーマは何か。",
+        answer="プラスチックごみによる海洋汚染。",
+        vocab_notes="海洋汚染: 海がゴミなどで汚れること。",
+        jlpt_level="N2",
+    )

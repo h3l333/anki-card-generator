@@ -7,12 +7,18 @@ import pytest
 from backend import llm
 from backend.llm import (
     LLMError,
+    _schema_without_tags,
     generate_card,
     generate_card_plain,
     generate_card_with_events,
     generate_cards_batch,
+    generate_dataset_batch,
+    generate_grammar_card,
+    generate_grammar_card_plain,
+    generate_reading_card,
+    generate_reading_card_plain,
 )
-from backend.models import BatchCardResult, CardDraft
+from backend.models import BatchCardResult, CardDraft, DatasetCardResult, GrammarCard, ReadingCard
 
 # backend/llm.py has two functions under test in this file:
 #   - generate_card(word: str) -> CardDraft: POSTs a prompt to OpenRouter
@@ -61,6 +67,22 @@ def _make_llm_plain_response(card_json, *, omit_labels=()):
 # backend/llm.py::_PROMPT_TEMPLATE_PLAIN/_parse_plain_card) instead of a JSON string.
 # `omit_labels` lets a test drop one or more lines to exercise
 # _parse_plain_card's missing-field check.
+
+
+def _make_llm_plain_response_for_labels(card_json, labels, *, omit_labels=()):
+    lines = [
+        f"{label}: {card_json[label.lower()]}"
+        for label in labels
+        if label.lower() not in omit_labels
+    ]
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "\n".join(lines)}}]
+    }
+    return mock_response
+# Generalizes _make_llm_plain_response above to an arbitrary label list, so it's reusable
+# for the grammar/reading plain-mode generators (_GRAMMAR_PLAIN_LABELS/
+# _READING_PLAIN_LABELS in backend/llm.py) as well as CardDraft's own eight.
 
 
 def test_generate_card_raises_when_api_key_missing(monkeypatch):
@@ -337,3 +359,196 @@ def test_generate_card_with_events_reports_unexpected_error():
     # differently per word: succeed for "大人", raise for "犬"- matching
     # generate_card_with_events turning that LLMError into a terminal "error" event, which
     # becomes this BatchCardResult's `error` field, without aborting the rest of the batch.
+
+
+# ---------------------------------------------------------------------------
+# Dataset-driven generation (Vocab/Grammar/Reading)- generate_grammar_card(_plain),
+# generate_reading_card(_plain), and generate_dataset_batch. Mirrors the vocab tests
+# above; grammar/reading share the same _generate_card_via machinery under the hood, so
+# only what's actually different (prompt content, model shape, dispatch) is re-tested
+# here rather than every failure mode already covered for vocab.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_grammar_card_returns_parsed_card(patch_api_key, sample_grammar_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_grammar_card_json)
+    ):
+        card = generate_grammar_card({"pattern": "〜ざるを得ない"})
+    assert card.pattern == "〜ざるを得ない"
+    assert card.jlpt_level == "N2"
+
+
+def test_generate_grammar_card_retries_on_pattern_drift(patch_api_key, sample_grammar_card_json):
+    wrong = {**sample_grammar_card_json, "pattern": "〜わけにはいかない"}
+    responses = [_make_llm_response(wrong), _make_llm_response(sample_grammar_card_json)]
+    with patch("backend.llm.requests.post", side_effect=responses):
+        card = generate_grammar_card({"pattern": "〜ざるを得ない"})
+    assert card.pattern == "〜ざるを得ない"
+
+
+def test_generate_grammar_card_raises_after_repeated_drift(patch_api_key, sample_grammar_card_json):
+    wrong = {**sample_grammar_card_json, "pattern": "〜わけにはいかない"}
+    responses = [_make_llm_response(wrong), _make_llm_response(wrong)]
+    with patch("backend.llm.requests.post", side_effect=responses):
+        with pytest.raises(LLMError, match="kept substituting a different grammar pattern"):
+            generate_grammar_card({"pattern": "〜ざるを得ない"})
+
+
+def test_generate_grammar_card_folds_seed_hints_into_prompt(patch_api_key, sample_grammar_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_grammar_card_json)
+    ) as mock_post:
+        generate_grammar_card({"pattern": "〜ざるを得ない", "connection_hint": "動詞ない形"})
+    sent_prompt = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "動詞ない形" in sent_prompt
+    # Confirms an item's optional connection_hint/meaning_hint (see backend/datasets.py)
+    # actually reaches the prompt- when absent, {seed_context} just renders as an empty
+    # string instead (see _grammar_seed_context in backend/llm.py).
+
+
+def test_generate_grammar_card_schema_excludes_tags(patch_api_key, sample_grammar_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_grammar_card_json)
+    ) as mock_post:
+        generate_grammar_card({"pattern": "〜ざるを得ない"})
+    schema = mock_post.call_args.kwargs["json"]["response_format"]["json_schema"]["schema"]
+    assert "tags" not in schema["properties"]
+    assert "tags" not in schema.get("required", [])
+    # tags belongs only to the export side of GrammarCard (see backend/models.py)- if it
+    # ever leaked into the schema sent to OpenRouter, "strict": True structured output
+    # would force the model to invent a tags value itself.
+
+
+def test_generate_grammar_card_plain_returns_parsed_card(patch_api_key, sample_grammar_card_json):
+    labels = [
+        "PATTERN", "CONNECTION", "MEANING", "NUANCE",
+        "SIMILAR_PATTERNS", "EXAMPLE_SENTENCE", "JLPT_LEVEL",
+    ]
+    with patch(
+        "backend.llm.requests.post",
+        return_value=_make_llm_plain_response_for_labels(sample_grammar_card_json, labels),
+    ):
+        card = generate_grammar_card_plain({"pattern": "〜ざるを得ない"})
+    assert card.pattern == "〜ざるを得ない"
+
+
+def test_generate_reading_card_returns_parsed_card(patch_api_key, sample_reading_card_json):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_reading_card_json)
+    ):
+        card = generate_reading_card({"topic": "環境問題"})
+    assert card.topic == "環境問題"
+
+
+def test_generate_reading_card_uses_given_passage_text_in_prompt(
+    patch_api_key, sample_reading_card_json
+):
+    with patch(
+        "backend.llm.requests.post", return_value=_make_llm_response(sample_reading_card_json)
+    ) as mock_post:
+        generate_reading_card({"topic": "環境問題", "passage_text": "海洋汚染についての文章。"})
+    sent_prompt = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "海洋汚染についての文章。" in sent_prompt
+    # When passage_text is supplied, the prompt should instruct the model to use that
+    # exact text rather than inventing its own passage (see _reading_passage_instruction
+    # in backend/llm.py).
+
+
+def test_generate_reading_card_plain_returns_parsed_card(patch_api_key, sample_reading_card_json):
+    labels = ["TOPIC", "PASSAGE", "QUESTION", "ANSWER", "VOCAB_NOTES", "JLPT_LEVEL"]
+    with patch(
+        "backend.llm.requests.post",
+        return_value=_make_llm_plain_response_for_labels(sample_reading_card_json, labels),
+    ):
+        card = generate_reading_card_plain({"topic": "環境問題"})
+    assert card.topic == "環境問題"
+
+
+def test_generate_dataset_batch_vocab_dispatches_to_generate_card(sample_card_json):
+    card = CardDraft(**sample_card_json)
+    with patch("backend.llm.generate_card", return_value=card) as mock_card:
+        results = [
+            r for r in generate_dataset_batch([{"word": "大人"}], "vocab")
+            if isinstance(r, DatasetCardResult)
+        ]
+    assert results[0].item == "大人"
+    assert results[0].section == "vocab"
+    assert results[0].card.expression == "大人"
+    mock_card.assert_called_once_with("大人", level=llm.JLPT_LEVEL_DEFAULT, on_retry=ANY)
+    # Confirms the vocab entry in _DATASET_GENERATORS (backend/llm.py) correctly adapts
+    # an item dict ({"word": "大人"}) into the bare word string generate_card expects.
+
+
+def test_generate_dataset_batch_grammar_dispatches_to_generate_grammar_card(
+    sample_grammar_card_json,
+):
+    card = GrammarCard(**sample_grammar_card_json)
+    with patch("backend.llm.generate_grammar_card", return_value=card) as mock_grammar:
+        results = [
+            r for r in generate_dataset_batch([{"pattern": "〜ざるを得ない"}], "grammar")
+            if isinstance(r, DatasetCardResult)
+        ]
+    assert results[0].item == "〜ざるを得ない"
+    assert results[0].section == "grammar"
+    mock_grammar.assert_called_once_with(
+        {"pattern": "〜ざるを得ない"}, level=llm.JLPT_LEVEL_DEFAULT, on_retry=ANY
+    )
+
+
+def test_generate_dataset_batch_reading_dispatches_to_generate_reading_card(
+    sample_reading_card_json,
+):
+    card = ReadingCard(**sample_reading_card_json)
+    with patch("backend.llm.generate_reading_card", return_value=card) as mock_reading:
+        results = [
+            r for r in generate_dataset_batch([{"topic": "環境問題"}], "reading")
+            if isinstance(r, DatasetCardResult)
+        ]
+    assert results[0].item == "環境問題"
+    assert results[0].section == "reading"
+    mock_reading.assert_called_once_with(
+        {"topic": "環境問題"}, level=llm.JLPT_LEVEL_DEFAULT, on_retry=ANY
+    )
+
+
+def test_generate_dataset_batch_uses_plain_mode_generator(sample_grammar_card_json):
+    card = GrammarCard(**sample_grammar_card_json)
+    with patch("backend.llm.generate_grammar_card_plain", return_value=card) as mock_plain, \
+         patch("backend.llm.generate_grammar_card") as mock_structured:
+        results = [
+            r for r in generate_dataset_batch(
+                [{"pattern": "〜ざるを得ない"}], "grammar", mode="plain"
+            )
+            if isinstance(r, DatasetCardResult)
+        ]
+    assert results[0].card.pattern == "〜ざるを得ない"
+    mock_plain.assert_called_once()
+    mock_structured.assert_not_called()
+
+
+def test_generate_dataset_batch_continues_after_one_failure():
+    def fake_generate_grammar_card(item, level=None, on_retry=None):
+        if item["pattern"] == "bad":
+            raise LLMError("boom")
+        return GrammarCard(
+            pattern=item["pattern"], connection="x", meaning="x", nuance="x",
+            similar_patterns="x", example_sentence="x", jlpt_level="N2",
+        )
+
+    with patch("backend.llm.generate_grammar_card", side_effect=fake_generate_grammar_card):
+        results = [
+            r for r in generate_dataset_batch([{"pattern": "ok"}, {"pattern": "bad"}], "grammar")
+            if isinstance(r, DatasetCardResult)
+        ]
+    assert results[0].card.pattern == "ok"
+    assert results[0].error is None
+    assert results[1].card is None
+    assert results[1].error == "boom"
+
+
+def test_schema_without_tags_strips_tags_property():
+    schema = _schema_without_tags(GrammarCard)
+    assert "tags" not in schema["properties"]
+    assert "tags" not in schema.get("required", [])
+    assert "pattern" in schema["properties"]

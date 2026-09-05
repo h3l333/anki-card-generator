@@ -245,6 +245,31 @@
 
   <div id="carousel" class="carousel"></div>
 
+  <hr>
+  <h2>Generate from Dataset (N2)</h2>
+  <p class="subtitle">Vocab, Grammar, or Reading, sourced from a local data/n2/*.json file.</p>
+
+  <div class="row">
+    <select id="datasetSection">
+      <option value="vocab">Vocab</option>
+      <option value="grammar">Grammar</option>
+      <option value="reading">Reading</option>
+    </select>
+    <button id="datasetGenerateBtn">Generate from Dataset</button>
+  </div>
+
+  <div id="datasetStatusBox" class="status"></div>
+
+  <div id="datasetProgress" class="progress-wrap">
+    <div class="progress-bar"><div class="fill"></div></div>
+    <div class="progress-meta">
+      <span id="datasetStage">Waiting for model...</span>
+      <span id="datasetElapsed">0s</span>
+    </div>
+  </div>
+
+  <div id="datasetCarousel" class="carousel"></div>
+
   <script src="index.js"></script>
 </body>
 </html>
