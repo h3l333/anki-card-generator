@@ -87,3 +87,35 @@ further edits) adds a new row rather than overwriting the old one, so the table 
 as a history log. The most recent row for a `word_id` is what tells the backend which
 Anki note to target with `updateNoteFields` on a re-export, instead of creating a
 duplicate note via `addNote`.
+
+## What this schema does *not* cover: dataset-driven generation
+
+The Vocab/Grammar/Reading dataset-driven flow (`backend/datasets.py`, `POST
+/generate/dataset`, `POST /export/grammar`, `POST /export/reading`, `POST
+/export/dataset-vocab`- see `ARCHITECTURE.md`) deliberately **does not touch any table
+on this page**. Nothing it generates is inserted into `words`/`cards`, and nothing it
+exports is recorded into `exports`. This is a considered decision, not an oversight:
+
+- The schema above is vocab-shaped (`words.kanji`/`words.reading`)- Grammar and Reading
+  don't fit it (a grammar pattern isn't a kanji/reading pair, a reading passage isn't a
+  word at all).
+- There's no migration tool in this repo (see `ROADMAP.md`)- `init_db()`'s `create_all()`
+  only creates tables that don't exist yet, it never retrofits new columns/indexes onto
+  ones that do (the `level` column and its index above both needed a hand-run SQL
+  statement for exactly this reason). Adding a clean set of new tables for two more
+  content types, plus deciding how `exports`-style history would generalize across three
+  very different "what got exported" shapes, is real schema work that isn't required for
+  a first version of this feature.
+
+Instead, duplicate protection for this flow happens at export time via AnkiConnect
+itself: `backend/anki.py`'s `_add_note_checked` calls `addNote` with
+`allowDuplicate: False` and reads AnkiConnect's own null-result signal (a note whose
+first/front field already matches one in that note type) as "already exists", rather
+than a Postgres lookup deciding it up front. Every dataset-driven export is a fresh
+`addNote`- there's no `updateNoteFields` re-export path for this flow, since there's no
+persisted note ID anywhere to target one with.
+
+Adding real persistence for this flow later is possible (new `grammar_points`/
+`grammar_cards` and `reading_passages`/`reading_cards` tables mirroring `words`/`cards`
+would need only `CREATE TABLE`s, not `ALTER TABLE`s, since they'd be new tables) but is
+explicitly deferred- see `ROADMAP.md`.

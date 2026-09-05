@@ -41,6 +41,8 @@ For multiple words at once, use the Batch Upload section: a `.txt` file with one
 
 Click "Generate from File" to get a horizontally-scrollable carousel of cards, one per word. Results stream in as each word finishes rather than waiting for the whole batch, with a live "X/N done" progress counter above the carousel. Each card is independently editable, discardable, and exportable, same as the single-word flow. If a word fails to generate, its card shows the error and the rest of the batch still completes; a malformed file (wrong characters, too many words) is rejected with an error before anything is generated.
 
+For JLPT N2 sample data, use the "Generate from Dataset (N2)" section: pick Vocab, Grammar, or Reading and click "Generate from Dataset" to generate cards from the matching local `data/n2/*.json` file (see `ARCHITECTURE.md`), no typing or file upload needed. Grammar and Reading cards have their own field layout (pattern/connection/meaning/etc. for Grammar; topic/passage/question/etc. for Reading) rather than the vocab fields, since neither is a single word. Each exported card from this section gets an extra Anki tag identifying its section (`N2::Vocab`, `N2::Grammar`, or `N2::Reading`), alongside the usual `anki-tool-v2` tag. This flow doesn't use Postgres at all- re-exporting the same item shows "Already in Anki" instead of creating a duplicate note, via AnkiConnect's own duplicate check rather than a database lookup. Listening is not included yet.
+
 ## Configuration
 
 - `OPENROUTER_API_KEY`: authenticates with the OpenRouter API used for card generation; leave empty in `.env` and fill in your own key (see PROMPTS.md).
@@ -49,6 +51,7 @@ Click "Generate from File" to get a horizontally-scrollable carousel of cards, o
 - `ANKICONNECT_URL`: AnkiConnect endpoint (default: `http://localhost:8765`).
 - `ANKI_DECK_NAME` / `ANKI_NOTE_TYPE`: target deck and note type for export (default: `Japanese` / `Japanese Note Type` in `full` mode, `Basic` in `basic` mode- see `ANKI_EXPORT_MODE` below).
 - `ANKI_EXPORT_MODE`: `full` (default) sends each field individually (`Expression`, `Reading`, `Definition`, `Nuance`, `Synonyms`, `Antonyms`, `Example`, `Jlpt`) to a custom note type. `ANKI_NOTE_TYPE` defaults to `Japanese Note Type` in this mode- if that note type doesn't already exist in Anki, the first `full`-mode export creates it automatically via AnkiConnect's `createModel` action, with those eight fields and a basic front/back template, so this works with zero manual Anki setup. An existing note type with that name is left untouched (`createModel` is only ever called to create, never to update). `basic` folds all eight fields into `Front`/`Back` instead, for Anki's stock `Basic` note type- a zero-config fallback with only two fields. Set `ANKI_NOTE_TYPE` yourself to use a different note type name in either mode.
+- `ANKI_GRAMMAR_NOTE_TYPE` / `ANKI_READING_NOTE_TYPE`: same idea as `ANKI_NOTE_TYPE`, but for the dataset-driven Grammar/Reading sections (default: `Japanese Grammar Note Type` / `Japanese Reading Note Type` in `full` mode, `Basic` in `basic` mode)- auto-created the same way on first export in `full` mode. `ANKI_EXPORT_MODE`/`ANKI_DECK_NAME` apply to these too; there's no separate mode setting per section.
 
 ## Troubleshooting
 
@@ -83,8 +86,10 @@ directly in a regular browser. This is the actual UI, not a placeholder for a de
 shell.
 
 It expects a backend at `http://localhost:5000` exposing `/generate`, `/generate/batch`,
-and `/export`. If the backend is unreachable, clicking Generate or Export will surface
-the connection-error messaging described in PROJECT.md's error handling section.
+`/generate/dataset`, `/export`, `/export/dataset-vocab`, `/export/grammar`, and
+`/export/reading`. If the backend is unreachable, clicking Generate or Export will
+surface the connection-error messaging described in PROJECT.md's error handling
+section.
 
 ## Chrome extension
 

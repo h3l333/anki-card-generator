@@ -24,6 +24,42 @@ solely on the LLM.
   goes ahead. The scope here is parsing Yomitan's dictionary file format as a
   data source, not hooking into the Yomitan browser extension itself.
 
+### Listening section for dataset-driven generation
+
+The Vocab/Grammar/Reading dataset-driven flow (`backend/datasets.py`, see
+`ARCHITECTURE.md`) deliberately excludes JLPT Listening for now. Adding it needs at
+least: an audio source/generation strategy (JLPT listening sections are audio-first, not
+purely text), a `data/<level>/listening.json` schema shaped around that, its own
+`ListeningCard` model/prompt pair, and a way to review an audio-bearing card in the
+browser UI (the current carousel only renders text `<input>`/`<textarea>` fields).
+
+### Dataset-driven generation: real Postgres persistence
+
+`backend/datasets.py`'s Vocab/Grammar/Reading flow currently bypasses Postgres
+entirely (see `DATABASE.md`'s "What this schema does not cover" section)- every item is
+regenerated fresh on every `/generate/dataset` call, and duplicate protection at export
+time relies on AnkiConnect's own `allowDuplicate: false` check instead of a
+`find_word_by_kanji`-style lookup. Adding real persistence would mean:
+
+- New tables (`grammar_points`/`grammar_cards`, `reading_passages`/`reading_cards`,
+  mirroring `words`/`cards`)- `create_all()` handles genuinely new tables fine, so this
+  doesn't hit the no-migration-tool wall the way retrofitting a column onto an existing
+  table would.
+- A decision on how `exports`-style history generalizes across three very different
+  "what got exported" shapes (a nullable, mutually-exclusive `word_id`/`grammar_id`/
+  `reading_id` on a shared table, vs. three separate export-history tables)- not resolved
+  yet, flagged here as the open design question.
+
+### AnkiConnect `updateNoteTags` for vocab re-export
+
+`backend/anki.py::export_card`'s `updateNoteFields` branch (the existing single-word/
+`.txt`-batch re-export path) doesn't send tags at all today- a pre-existing gap, not
+something the dataset-driven tagging feature introduced (that feature's own exports
+never use `updateNoteFields` in the first place- see `ARCHITECTURE.md`). Fixing it would
+mean an additional AnkiConnect `updateNoteTags` call alongside `updateNoteFields` when a
+re-export's tags differ from what's already on the note. Small, isolated, low-risk- just
+not yet done.
+
 ## Engineering tasks
 
 - **Plain-text generation mode: done.** A second generation path

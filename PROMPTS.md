@@ -133,6 +133,93 @@ structured path was (see the 2026-08-07 change log entry below)- the label
 format's reliability against actual free-tier model output still needs
 observing.
 
+## Dataset-driven generation prompts (Grammar / Reading)
+
+Two more prompt pairs (structured + plain, same split as the vocab prompt above),
+used only by the dataset-driven flow (`backend/datasets.py`, `POST /generate/dataset`-
+see `ARCHITECTURE.md`). Vocab items generated via that flow reuse the exact card
+generation prompt above unchanged- only Grammar and Reading needed new ones, since
+neither fits a kanji/reading/example-sentence card shape.
+
+Both `GrammarCard`/`ReadingCard` (`backend/models.py`) carry a `tags` field for the
+export side (see `DATABASE.md`), but the LLM is never asked to produce it-
+`backend/llm.py::_schema_without_tags` strips it from the `response_format` schema sent
+to OpenRouter before the structured-mode request goes out, so `"strict": True` doesn't
+force the model to invent a value for a field nothing downstream reads from generation.
+
+### Grammar prompt
+
+**Output schema:** `backend/models.py::GrammarCard` (minus `tags`, per above)
+
+```text
+対象の文法項目: 「{pattern}」
+想定読者のレベル: JLPT {level}
+{seed_context}
+あなたは日本語学習者向けの文法カードを作成します。
+必ず「{pattern}」についてのみ回答してください。他の文法項目に置き換えないでください。
+meaning、nuance、example_sentenceは、JLPT {level}の学習者が理解できる語彙と文法だけを使って書いてください。
+
+次の情報をJSON形式で生成してください:
+- pattern: 「{pattern}」の表記
+- connection: 「{pattern}」の接続方法(例: 動詞辞書形+〜など)
+- meaning: 「{pattern}」の日本語のみによる意味の説明(モノリンガル)。JLPT {level}レベル向け。
+- nuance: 「{pattern}」の使い方のニュアンス、フォーマル度、類似の文法項目との違いなど。JLPT {level}レベル向け。
+- similar_patterns: 「{pattern}」と意味・用法が似ている文法項目。読点で区切って複数挙げてください。該当するものがなければ「該当なし」と書いてください。
+- example_sentence: 「{pattern}」を使った自然な例文。JLPT {level}レベルの学習者向けに、ふりがなは付けず、漢字とかなのみのプレーンテキストで書いてください。
+- jlpt_level: 「{pattern}」の推定されるJLPTレベル(N5〜N1のいずれか)。
+
+繰り返しますが、対象の文法項目は「{pattern}」です。
+```
+
+`{seed_context}` (`backend/llm.py::_grammar_seed_context`) folds in a dataset item's
+optional `connection_hint`/`meaning_hint` (`data/<level>/grammar.json`- see
+`ARCHITECTURE.md`) as one or two "参考(...)" reference lines when present, or renders as
+an empty string when absent. The model is told to use these as reference context to
+refine, not restate verbatim.
+
+The pattern itself is anchored at the start/middle/end, same anti-drift technique as
+the vocab prompt's target word.
+
+**Plain-text variant:** same seven fields (`PATTERN`, `CONNECTION`, `MEANING`,
+`NUANCE`, `SIMILAR_PATTERNS`, `EXAMPLE_SENTENCE`, `JLPT_LEVEL`) as plain labeled lines,
+parsed by `backend/llm.py::_parse_plain_grammar_card`- same parsing conventions as the
+vocab plain prompt (tolerant of stray bullets/whitespace, raises if any label is
+missing).
+
+### Reading prompt
+
+**Output schema:** `backend/models.py::ReadingCard` (minus `tags`)
+
+```text
+対象のトピック: 「{topic}」
+想定読者のレベル: JLPT {level}
+
+あなたは日本語学習者向けの読解問題を作成します。
+{passage_instruction}
+question、answerは、JLPT {level}の学習者が理解できる語彙と文法だけを使って書いてください。
+
+次の情報をJSON形式で生成してください:
+- topic: 「{topic}」
+- passage: 読解文章そのもの(ふりがなは付けず、漢字とかなのみのプレーンテキスト)
+- question: 文章の内容に関する読解問題を1つ
+- answer: 上記の問題に対する模範解答
+- vocab_notes: 文章中の難しい語彙や表現についての簡単な説明
+- jlpt_level: この文章の推定JLPTレベル(N5〜N1のいずれか)
+
+繰り返しますが、対象のトピックは「{topic}」です。
+```
+
+`{passage_instruction}` (`backend/llm.py::_reading_passage_instruction`) branches on
+whether the dataset item supplies `passage_text` (`data/<level>/reading.json`): when
+present, the model is instructed to use that exact text as `passage` rather than
+inventing its own; when absent, it's asked to write a new passage on `{topic}` itself.
+
+**Plain-text variant:** same six fields (`TOPIC`, `PASSAGE`, `QUESTION`, `ANSWER`,
+`VOCAB_NOTES`, `JLPT_LEVEL`), parsed by `backend/llm.py::_parse_plain_reading_card`. As
+with every other plain-mode field, each value has to fit on one line with no embedded
+newline- `passage` in plain mode is therefore a single-paragraph block of text, not
+multiple lines, same constraint the structured prompt doesn't have.
+
 ## Change log
 
 - 2026-07-25: initial prompt and model choice documented alongside the first
@@ -315,4 +402,21 @@ observing.
   `(kanji, level)` key) deliberately stays mode-agnostic rather than also
   keying on `mode`. Not yet live-verified against a real OpenRouter
   response. Covered by new tests in `tests/test_llm.py` and
+  `tests/test_main.py`.
+- 2026-09-01: added dataset-driven generation for JLPT N2 Vocab/Grammar/Reading
+  (`backend/datasets.py`, `POST /generate/dataset`- see `ARCHITECTURE.md`). Vocab
+  reuses the existing card generation prompt above unchanged; Grammar and Reading got
+  their own new prompt pairs (see "Dataset-driven generation prompts" above), since
+  neither fits the vocab-shaped card. `_generate_card_via`'s hardcoded word-drift check
+  was generalized into a `verify`/`verify_fail_message` pair of parameters so the same
+  request/retry/error-wrapping machinery could be reused for grammar (pattern drift) and
+  reading (topic drift) without duplicating it a third and fourth time; the vocab
+  callers' own behavior and error message text (`"kept substituting..."`) are unchanged.
+  This entire flow deliberately never touches Postgres- see `DATABASE.md`'s "What this
+  schema does not cover" section for why, and `ARCHITECTURE.md` for how duplicate
+  protection works instead (AnkiConnect's own `allowDuplicate: false`, not a
+  `find_word_by_kanji`-style lookup). Not yet live-verified against a real OpenRouter
+  response for the grammar/reading prompts specifically- the vocab path they share
+  `_generate_card_via` with already was (see the 2026-08-07 entry above). Covered by new
+  tests in `tests/test_datasets.py`, `tests/test_llm.py`, `tests/test_anki.py`, and
   `tests/test_main.py`.

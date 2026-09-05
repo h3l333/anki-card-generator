@@ -54,3 +54,58 @@ flowchart TD
 ## Chrome Extension Flow (no review step)
 
 The extension (`extension/`) skips step 4 above entirely. It calls a single combined endpoint, `POST /generate/export`, which internally runs the same duplicate-check (step 2) and LLM/persistence (step 3) logic, then immediately does the export (step 5) against the freshly generated or Postgres-fetched card- no editable form, no user-in-the-loop step between generation and Anki. The endpoint streams back one terminal NDJSON event: `"exported"` on success, or `"error"` with a `stage` of `"generate"` (nothing new persisted) or `"export"` (card generated and saved to Postgres, but the AnkiConnect call failed- recoverable via the web app's ordinary duplicate-word path, since re-generating the same word there will find it already on file). The extension's background service worker can have several of these requests in flight at once, each independent, and shows a desktop notification per outcome. See `extension/README.md`.
+
+## Dataset-Driven Generation (Vocab / Grammar / Reading)
+
+```mermaid
+flowchart TD
+    Picker["Browser UI: pick section<br/>(Vocab / Grammar / Reading)"] -->|"POST /generate/dataset"| Load[Python Backend]
+    Load -->|"read data/&lt;level&gt;/&lt;section&gt;.json"| Items{Dataset file valid?}
+    Items -->|"no- 404/400 before streaming starts"| Error["HTTP error response"]
+    Items -->|yes| GenLoop["Per item: HTTPS prompt request"]
+    GenLoop --> OpenRouter[OpenRouter API]
+    OpenRouter -->|structured/plain response| Card["Section-shaped card<br/>(CardDraft / GrammarCard / ReadingCard)"]
+    Card -->|NDJSON stream, one line per item| ReviewCarousel["Browser UI carousel<br/>USER EDITS HERE"]
+
+    ReviewCarousel -->|user clicks Export| ExportRoute["POST /export/dataset-vocab,<br/>/export/grammar, or /export/reading"]
+    ExportRoute -->|"addNote, allowDuplicate: false"| Anki[Anki Desktop]
+    Anki -->|"null result = duplicate,<br/>note id = created"| ExportRoute
+    ExportRoute -->|"{status: exported | duplicate}"| ReviewCarousel
+```
+
+This is a separate, parallel pipeline from the one above- **no Postgres involvement at
+any step** (see `DATABASE.md`'s "What this schema does not cover" section). It exists
+alongside, not instead of, the single-word/batch/extension flows.
+
+1. **Section selection:** the user picks Vocab, Grammar, or Reading in the browser UI
+   and clicks "Generate from Dataset". No word/file input- the source data already
+   lives in a local `data/<level>/<section>.json` file (`backend/datasets.py`, currently
+   only `data/n2/`).
+2. **Dataset load & validation:** `backend/datasets.py::load_section` reads and
+   validates that file (wrapper `section`/`level` match what was requested, `items` is a
+   non-empty list under `MAX_ITEMS`, each item has its section's required key- `word`
+   for vocab, `pattern` for grammar, `topic` for reading). A missing file or a validation
+   failure is raised as `HTTPException(404)`/`HTTPException(400)` *before* streaming
+   starts, same reasoning as the batch `.txt` flow's `BatchValidationError` handling.
+3. **Per-item generation (no duplicate check here):** unlike the flow above, there is no
+   Postgres lookup before generating- every item in the dataset always gets a fresh LLM
+   call. `backend/llm.py::generate_dataset_batch` dispatches to
+   `generate_card`/`generate_grammar_card`/`generate_reading_card` (or their `_plain`
+   counterparts) by section, streaming NDJSON progress/result events exactly like the
+   batch flow's `generate_cards_batch`, just with no `insert_word`/`insert_card` call
+   anywhere in the loop.
+4. **Review:** results stream into a carousel, same interaction pattern as the batch
+   `.txt` flow's carousel, but the *shape* of each card's editable fields depends on its
+   section (see `PROMPTS.md`)- Vocab gets the familiar eight vocab fields; Grammar gets
+   pattern/connection/meaning/nuance/similar patterns/example/JLPT; Reading gets
+   topic/passage/question/answer/vocab notes/JLPT.
+5. **Export (AnkiConnect-side duplicate check, not Postgres):** clicking Export posts to
+   a section-specific route (`/export/dataset-vocab`, `/export/grammar`, or
+   `/export/reading`), which always calls AnkiConnect's `addNote` with
+   `allowDuplicate: false` and an extra Anki tag identifying the section (e.g.
+   `N2::Grammar`, alongside the existing `anki-tool-v2` tag). There is no
+   `updateNoteFields` path for this flow- no persisted note ID exists anywhere to target
+   one with. AnkiConnect itself decides whether a note already exists (by its first/front
+   field, within the target note type)- a hit comes back as a null `addNote` result
+   rather than an error, which `backend/anki.py::_add_note_checked` turns into a
+   `{"status": "duplicate"}` response instead of a broken/missing note id.

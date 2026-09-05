@@ -31,6 +31,21 @@ Intermediate and advanced Japanese learners who want fast, nuanced monolingual c
   - Theme Color (e.g., card background/accent colors).
   - Font Family.
 
+### 4. Dataset-Driven Generation (Vocab / Grammar / Reading)
+
+- **Local JLPT datasets:** Generate cards from local `data/<level>/<section>.json` files
+  covering three JLPT sections- Vocab, Grammar, Reading- instead of typing/uploading
+  words by hand. **Listening is deliberately excluded for now**, a future addition once
+  the other three sections are proven out.
+- **Section-specific card shapes:** Grammar and Reading get their own card content
+  (grammar pattern/connection/meaning/example; reading passage/comprehension question)
+  rather than being forced through the vocab-shaped card fields (see `ARCHITECTURE.md`).
+- **Anki tagging by section:** Every exported card from this flow carries an additional
+  Anki tag identifying its section (e.g. `N2::Vocab`, `N2::Grammar`, `N2::Reading`),
+  alongside the existing `anki-tool-v2` tag every export gets.
+- **No database involvement:** this entire flow bypasses Postgres- see `DATABASE.md`.
+  Duplicate protection is instead handled by AnkiConnect itself at export time.
+
 ## Non-goals
 
 - No Yomitan export parsing or browser extension hooks.
