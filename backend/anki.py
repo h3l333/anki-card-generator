@@ -8,31 +8,48 @@ ANKICONNECT_URL = os.getenv("ANKICONNECT_URL", "http://localhost:8765")
 DECK_NAME = os.getenv("ANKI_DECK_NAME", "Japanese")
 EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "full")
 
+# default_note_type returns the default note type based on the export mode.
+# export_mode can either be full or basic depending on user preference.
+# If full, the default note type is "Japanese Note Type"; otherwise it defaults to the basic note type.
 def _default_note_type(export_mode: str) -> str:
     return "Japanese Note Type" if export_mode == "full" else "Basic"
 
-
+# NOTE_TYPE can be either the default note type (Basic) or user-defined Japanese note type.
+# If it isn't set in .env, it defaults to the note type returned by _default_note_type.
 NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", _default_note_type(EXPORT_MODE))
 
 
 class AnkiConnectError(Exception):
     """Raised when AnkiConnect is unreachable or returns an error."""
 
-
+# Defines a list specifying the fields for the full mode note type.
+# In Python, a list differs from an array in the sense that the contents can be of different types,
+# while an array is typically homogeneous.
+# Memory efficiency depends on what's stored: arrays are more compact for small primitives
+# (no per-element boxing overhead), while lists' pointer indirection avoids needing fixed-size
+# slots for large or variable-sized objects. Neither case really applies to the short strings
+# FULL_MODE_FIELDS holds.
 FULL_MODE_FIELDS = [
     "Expression", "Reading", "Definition", "Nuance",
     "Synonyms", "Antonyms", "Example", "Jlpt",
 ]
 
+# os.getenv(key, default=None) is the generic syntax for the following implemented function.
 GRAMMAR_NOTE_TYPE = os.getenv(
     "ANKI_GRAMMAR_NOTE_TYPE",
     "Japanese Grammar Note Type" if EXPORT_MODE == "full" else "Basic",
 )
+
+# A Reading card is just a card that has a set topic and passage to read relating to the
+# aforementioned subject matter, paired with a question and answer, vocab notes, and a
+# JLPT level estimate- see models.py.
 READING_NOTE_TYPE = os.getenv(
     "ANKI_READING_NOTE_TYPE",
     "Japanese Reading Note Type" if EXPORT_MODE == "full" else "Basic",
 )
 
+# The fields listed here must correspond to the mapping in _build_grammar_fields/_build_reading_fields-
+# names differ from the models.py card fields themselves (e.g. Jlpt vs jlpt_level).
 GRAMMAR_FULL_MODE_FIELDS = [
     "Pattern", "Connection", "Meaning", "Nuance",
     "SimilarPatterns", "Example", "Jlpt",
@@ -49,24 +66,52 @@ def _post_to_ankiconnect(action: str, params: dict) -> dict:
             json={"action": action, "version": 6, "params": params},
             timeout=10,
         )
+        # The request payload must be a JSON object containing the action, version and parameters.
+        # That is the format that the AnkiConnect API expects.
         response.raise_for_status()
+        # A built-in method used to automatically raise an exception if an HTTP request fails.
     except requests.RequestException as exc:
         raise AnkiConnectError(
             f"Could not reach AnkiConnect at {ANKICONNECT_URL}: {exc}"
         ) from exc
+        # In Python, the raise Exception from e syntax is
+        # used for exception chaining.
+        # In Python, a stack trace allows developers to trace the
+        # sequence of function calls that led to an error or exception.
+        # `raise exception from e` syntax allows errors to be linked together,
+        # providing context about the original exception that caused the current
+        # one.
 
-    data = response.json()
+    data = response.json() # Get the JSON response from the AnkiConnect
+    # API. The response is expected, in the case of request.post() method
+    # invocation, to be a JSON object containing the result of the HTTP request.
     if data.get("error"):
+        # data.get("error") is truthy only if "error" is present with a non-null/non-empty
+        # value (AnkiConnect sends "error": null on success, which is falsy).
+        # If truthy, it raises an error. Otherwise, the data is safely returned.
         raise AnkiConnectError(data["error"])
     return data
 
-
+# _ensure_note_type checks if a note type exists in AnkiConnect,
+# and creates it if it doesn't. The front_field parameter
+# specifies which field should be displayed on the front of the card.
 def _ensure_note_type(note_type: str, fields: list[str], front_field: str) -> None:
+    # Calls AnkiConnect's modelNames action (no params)
+    # to get the list of every note
+    # type name currently defined in the user's Anki collection.
+    # data becomes the parsed JSON response, e.g. {"result": ["Basic",
+    # "Japanese Note Type", ...], "error": null}.
+    # The next line (data["result"]) checks whether the target note
+    # type already exists, to decide if createModel is needed.
     data = _post_to_ankiconnect("modelNames", {})
     if note_type in data["result"]:
         return
 
     back_fields = "<br>".join(f"{{{{{field}}}}}" for field in fields if field != front_field)
+    # Builds the HTML for the back of the card template: every field except
+    # front_field, joined by <br>. f"{{{{{field}}}}}" -> Anki's {{FieldName}}
+    # syntax (quadruple braces
+    # because {{ and }} are escaped literal braces in an f-string, with {field} in between).
     _post_to_ankiconnect(
         "createModel",
         {
@@ -83,8 +128,13 @@ def _ensure_note_type(note_type: str, fields: list[str], front_field: str) -> No
         },
     )
 
-
+# If EXPORT_MODE is not set to either basic or full,
+# _build_fields raises a ValueError.
+# Otherwise, it builds a dictionary of fields according to the type.
 def _build_fields(card: ExportRequest) -> dict:
+    # A dict behaves like a dynamic object whose properties (keys) can be
+    # added, deleted, or updated at runtime without modifying a
+    # class blueprint.
     if EXPORT_MODE == "full":
         return {
             "Expression": card.expression,
@@ -114,7 +164,9 @@ def _build_fields(card: ExportRequest) -> dict:
     )
     return {"Front": front, "Back": back}
 
-
+# anki_note_id could be an integer rather than None in the case that
+# the call to the Postgres database in main.py returns a valid
+# note ID for the export.
 def export_card(card: ExportRequest, anki_note_id: int | None = None) -> int:
     if EXPORT_MODE == "full":
         _ensure_note_type(NOTE_TYPE, FULL_MODE_FIELDS, "Expression")
@@ -201,7 +253,11 @@ def _build_reading_fields(card: ReadingCard) -> dict:
     )
     return {"Front": front, "Back": back}
 
-
+# _add_note_checked adds a note to AnkiConnect and returns a tuple
+# containing the note ID (or None if it was not added) and a 
+# boolean indicating whether the note was added successfully.
+# The model_name parameter specifies the note type (e.g., "Japanese
+# Note Type", or the reading note type or the grammar note type).
 def _add_note_checked(
     model_name: str, fields: dict, tags: list[str] | None
 ) -> tuple[int | None, bool]:

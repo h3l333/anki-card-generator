@@ -9,7 +9,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 Section = Literal["vocab", "grammar", "reading"]
 
-# REQUIRED_ITEM_KEY is a dictionary object
+# REQUIRED_ITEM_KEY is a dictionary object.
 REQUIRED_ITEM_KEY: dict[Section, str] = {
     "vocab": "word",
     "grammar": "pattern",
