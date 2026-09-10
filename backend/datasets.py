@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-MAX_ITEMS = 12
+MAX_ITEMS = 999
 
 # Resolves path corresponding to the JLPT data that the program draws from to build
 # vocab, grammar, and reading cards.
