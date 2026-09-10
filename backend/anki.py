@@ -1,3 +1,14 @@
+# This script focuses on:
+# - Resolving note types
+# - Defining errors
+# - Fetching Anki-relevant env vars (or using function-resolved defaults)
+# - Defining card fields
+# - Making POST requests to the Anki API
+# - Checking existing note types, and creating a note type in the case that it is
+#   inexistent.
+# - Building fields to later post to AnkiConnect.
+# - Card exportation: creating a new card if none exists or updating it in the case that one
+#   already does.
 import os
 
 import requests
@@ -14,8 +25,9 @@ EXPORT_MODE = os.getenv("ANKI_EXPORT_MODE", "full")
 def _default_note_type(export_mode: str) -> str:
     return "Japanese Note Type" if export_mode == "full" else "Basic"
 
-# NOTE_TYPE can be either the default note type (Basic) or user-defined Japanese note type.
-# If it isn't set in .env, it defaults to the note type returned by _default_note_type.
+# NOTE_TYPE is either a user-supplied ANKI_NOTE_TYPE (any name) or, if that env var isn't set,
+# whatever _default_note_type returns for the current EXPORT_MODE ("Japanese Note Type" for
+# full, "Basic" for basic).
 NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", _default_note_type(EXPORT_MODE))
 
 
@@ -24,7 +36,7 @@ class AnkiConnectError(Exception):
 
 # Defines a list specifying the fields for the full mode note type.
 # In Python, a list differs from an array in the sense that the contents can be of different types,
-# while an array is typically homogeneous.
+# while an array is typically homogeneous. (Assuming arrays as implemented in the C language.)
 # Memory efficiency depends on what's stored: arrays are more compact for small primitives
 # (no per-element boxing overhead), while lists' pointer indirection avoids needing fixed-size
 # slots for large or variable-sized objects. Neither case really applies to the short strings

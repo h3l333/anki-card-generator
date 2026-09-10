@@ -32,14 +32,63 @@ DATABASE_URL = (
     f"postgresql+psycopg://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
     f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 )
+# Example: postgresql+psycopg://anki_tool:devpassword@localhost:5432/anki_tool
+# The URL points to a database connection string (Uniform Resource Identifier). A
+# database connection string contains the parameters an app needs to:
+# - locate
+# - authenticate with
+# - establish communication with
+# a database.
+# Basically, it tells the app where to find the database and provides the required keys to
+# "walk through the front door".
+#
+# From the create_engine func. description:
+#   The string form of the URL is dialect[+driver]://user:password@host/dbname[?key=value..],
+#   where dialect is a database name such as mysql, oracle, postgresql, etc., and driver
+#   the name of a DBAPI, such as psycopg2, pyodbc, cx_oracle, etc.
+#   Alternatively, the URL can be an instance of URL.
 
+# The code below creates an instance of the Engine class, which itself references `Dialect` and
+# `Pool`. To reference another class essentially means to store a memory address to where
+# the 2nd object lives. An example of this occuring could be an object that has another
+# as an attribute value. 
+# Reminder: a database "pool connection" is just a collection of pre-opened, active DB connections
+# which are created lazily as they're first needed (not necessarily all at once on app initialization).
+# When an incoming request needs data, it borrows
+# an idle connection from the pool rather than opening a new socket (allocating space in memory to it,
+# creating it, binding it to a port...) and upon release, said connection is returned to the pool
+# and not closed.
+# This mechanism exists to minimise latency, handshake overhead, system calls from the DB manager SW...
 engine = create_engine(DATABASE_URL)
+# Note: SQLAlchemy's Engine here isn't the DBMS's own storage engine (the part of Postgres
+# that parses queries and enforces atomicity, consistency, isolation and durability)- it's a
+# connection/dialect layer on top of that.
+# It does not handle UI administration, backup and recovery scheduling or performance reporting.
+#
+# engine = create_engine(DATABASE_URL) creates an Engine object, which manages a pool of database
+# connections and understands how to translate Python commands into the dialect implemented
+# by the DB.
+#
+# Moreover,
+# To start sending queries over, a connection object needs to be created. Since the engine manages
+# connections, it is necessary to ask the engine for a connection prior to sending statements over
+# to the DB.
 
+# sessionmaker() is a configurable factory for SQLAlchemy Session objects.
+#
+# A Session is not itself a database connection. It manages ORM operations,
+# transactions, and the objects loaded from or persisted to the database.
+# When database access is needed, the Session obtains a connection from its
+# associated Engine, typically from the Engine's connection pool.
+#
+# A Session is usually created for a specific unit of work, such as handling
+# a request or performing a particular database operation. It is not inherently
+# associated with a specific user and does not normally store user credentials.
 SessionLocal = sessionmaker(bind=engine)
 
 
-class Base(DeclarativeBase):
-    pass
+class Base(DeclarativeBase): # DB models inherit from the Base class.
+    pass # `pass` is a placeholder in blocks where Python requires an indented statement
 
 
 class Word(Base):
@@ -47,6 +96,10 @@ class Word(Base):
     __table_args__ = (Index("ix_words_kanji_level", "kanji", "level"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # id is the name, Mapped[int] functions as a type hint (indicating to both VSCode and SQLAlchemy the data type)
+    # and mapped_column() configures SQLAlchemy's table/column metadata (not the live DB engine directly) to set up
+    # special rules that Python types cannot express- that metadata is what's used to talk to the DB later, e.g. via
+    # init_db()'s create_all().
     kanji: Mapped[str] = mapped_column(String)
     reading: Mapped[str] = mapped_column(String)
     level: Mapped[str] = mapped_column(String)
@@ -54,6 +107,7 @@ class Word(Base):
     created_at: Mapped[object] = mapped_column(TIMESTAMP, server_default=func.now())
 
     cards: Mapped[list["Card"]] = relationship(back_populates="word")
+    # back_populates is used to explicitly define relationships in both models.
 
     exports: Mapped[list["Export"]] = relationship(back_populates="word")
 

@@ -482,11 +482,12 @@ def test_export_route_succeeds(client, sample_export_request):
     mock_record_export.assert_not_called()
     mock_export_card.assert_called_once_with(ANY, anki_note_id=None)
     # sample_export_request (from conftest.py) leaves word_id at its default of None (see
-    # ExportRequest in backend/models.py)- the same shape a batch-flow export currently
-    # sends, since batch cards have no word_id yet (see backend/models.py's comment on
-    # why). With no word_id, the route must skip both DB calls entirely rather than error-
-    # that's the current, intentional fallback behavior for batch exports, not a gap in
-    # this test. client.post(json=...) needs a plain dict, hence .model_dump().
+    # ExportRequest in backend/models.py). A real batch export normally does carry a
+    # word_id (_stream_batch_results sets it on every persisted card- see CLAUDE.md), so
+    # this covers the fallback case instead: a caller (or a word that failed to persist)
+    # sending no word_id at all. With no word_id, the route must skip both DB calls
+    # entirely rather than error- that's the current, intentional fallback behavior, not
+    # a gap in this test. client.post(json=...) needs a plain dict, hence .model_dump().
 
 
 def test_export_route_maps_anki_error_to_503(client, sample_export_request):

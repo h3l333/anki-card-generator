@@ -47,18 +47,29 @@ from backend.models import (
 )
 
 
+# Tells the Python interpreter that the subsequent code need be passed to the asynccontextmanager defined in contextlib.py,
+# wrapped and then assigned to the lifespan function, so it can be ran as an asynchronous generator.
+# When FastAPI boots up, it expects the object passed to be an async context manager. If this condition is not met, the server crashes.
+# Reminder that the code below is equivalent to this:
+#
+# from contextlib import asynccontextmanager
+#
+# async def my_helper():
+#   yield "resource"
+#
+#  my_helper = asynccontextmanager(my_helper) 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
+async def lifespan(app: FastAPI): # The lifespan parameter manages the complete cycle of the app, including startup and shutdown.
+    init_db() # Loads database.
     yield
-    llm._EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    llm._EXECUTOR.shutdown(wait=False, cancel_futures=True) # Cleanup.
 
 
 app = FastAPI(title="Anki Tool v2 Backend", lifespan=lifespan)
 
 app.add_middleware(
-    CORSMiddleware,
+    CORSMiddleware, # "Cross-Origin Resource Sharing" enables configuration of allowed origins, credentials, methods and headers.
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,7 +112,7 @@ def _persist_generated_card(word: str, level: str, source: str, card: CardDraft)
     return word_id
 
 
-def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]:
+def _stream_generate_result(word: str, level: str, mode: str) -> Iterator[str]: # Iterator is an object that yields a value one at a time upon req.
     for event in generate_card_with_events(word, level, mode=mode):
         if event["event"] == "result":
             try:

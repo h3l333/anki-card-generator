@@ -77,7 +77,7 @@ form.addEventListener("submit", (event) => {
   };
   chrome.runtime.sendMessage(job);
 
-  // Clear immediately so the next word can be pasted right away - generation/export runs
+  // Clear immediately so the next word can be pasted right away- generation/export runs
   // in the background service worker without blocking this input.
   wordInput.value = "";
   wordInput.focus();

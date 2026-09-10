@@ -30,7 +30,8 @@ from backend.anki import (
 )
 from backend.models import GrammarCard, ReadingCard
 
-# backend/anki.py has two functions under test in this file:
+# backend/anki.py has several functions under test in this file. The two exercised most
+# heavily:
 #   - _build_fields(card: ExportRequest) -> dict: pure- no network calls, no side effects. It
 #     just formats an ExportRequest's eight fields into the {"Front": ..., "Back": ...} shape
 #     that Anki's "Basic" note type expects, since "Basic" only has those two fields.
@@ -41,6 +42,10 @@ from backend.models import GrammarCard, ReadingCard
 #     problem) or if AnkiConnect responds normally but with its own "error" field set in the
 #     JSON body (e.g. a duplicate note). Returns the Anki note ID either way- addNote's own
 #     assigned ID, or the same anki_note_id that was passed in for an update.
+# Also covered: _default_note_type, _ensure_note_type (auto-creating a missing note type via
+# AnkiConnect's createModel), _add_note_checked (the dataset-flow's addNote wrapper- a null
+# "result" from AnkiConnect means "duplicate", not an error), _build_grammar_fields/
+# _build_reading_fields, and export_grammar_card/export_reading_card/export_dataset_vocab_card.
 # Every test below that calls export_card patches "backend.anki.requests.post" so that no real
 # network request is ever made- Anki desktop and AnkiConnect don't need to be running for
 # these tests to pass, only the fake response object each test constructs matters.

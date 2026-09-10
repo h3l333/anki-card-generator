@@ -1,5 +1,6 @@
-import re
-
+# This module focuses on parsing and validating .txt files via which multiple
+# cards can be requested at once.
+import re # Standard Python library for working with regular expressions.
 
 MAX_WORDS = 12
 
@@ -9,7 +10,9 @@ _WORD_PATTERN = re.compile(r"^[一-鿿぀-ゟ゠-ヿ]+$")
 class BatchValidationError(Exception):
     """Raised when an uploaded batch file doesn't match the expected format."""
 
-
+# strip() removes leading and trailing whitespaces (spaces, tabs (\t), newlines (\n)).
+# splitlines() splits a multi-line string into a *list* of individual lines.
+# `if line.strip()` at the end works as a "skip empty lines" guard.
 def parse_and_validate(file_content: str) -> list[str]:
     words = [line.strip() for line in file_content.splitlines() if line.strip()]
 

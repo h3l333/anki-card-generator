@@ -20,7 +20,8 @@ from backend.llm import (
 )
 from backend.models import BatchCardResult, CardDraft, DatasetCardResult, GrammarCard, ReadingCard
 
-# backend/llm.py has two functions under test in this file:
+# backend/llm.py has several functions under test in this file. The two exercised most
+# heavily:
 #   - generate_card(word: str) -> CardDraft: POSTs a prompt to OpenRouter
 #     (backend.llm.requests.post), asks it for a JSON body matching CardDraft's schema, and
 #     parses response["choices"][0]["message"]["content"] with CardDraft.model_validate_json().
@@ -31,6 +32,9 @@ from backend.models import BatchCardResult, CardDraft, DatasetCardResult, Gramma
 #   - generate_cards_batch(words: list[str]) -> Iterator[BatchCardResult]: a generator that
 #     loops generate_card over a list of words, catching LLMError per word rather than
 #     failing the whole batch, so one bad word doesn't prevent the rest from generating.
+# Also covered: generate_card_plain/generate_card_with_events (the plain-text and
+# event-streaming variants), generate_dataset_batch (Vocab/Grammar/Reading dispatch),
+# generate_grammar_card(_plain)/generate_reading_card(_plain), and _schema_without_tags.
 # Every test that calls generate_card patches "backend.llm.requests.post" so no real network
 # call to OpenRouter is ever made- no OPENROUTER_API_KEY or internet connection is required for
 # these tests to pass, only the fake response object each test builds matters.
@@ -214,7 +218,8 @@ def test_generate_card_plain_raises_on_missing_labels(patch_api_key, sample_card
     # No structured-mode equivalent- CardDraft.model_validate_json already enforces every
     # field is present via pydantic, but plain mode's own _parse_plain_card has to check
     # this by hand since it's just splitting text on lines. Note this failure doesn't
-    # retry (v1 scope, see backend/llm.py)- it raises LLMError on the first attempt.
+    # retry- _generate_card_via's on_retry hook only fires on a failed verify() (e.g. wrong
+    # word), not on a parse error, so a missing-label response raises LLMError immediately.
 
 
 def test_generate_card_plain_uses_level_in_prompt(patch_api_key, sample_card_json):

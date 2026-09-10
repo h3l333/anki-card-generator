@@ -84,8 +84,8 @@ def test_find_word_by_kanji_treats_different_levels_as_distinct_words(cleanup_wo
     assert found_n3.id == id_n3
     assert found_n1.id == id_n1
     assert found_n3.id != found_n1.id
-# Same kanji, two levels- this is the duplicate-check key backend/db.py's Word docstring
-# describes (kanji, level) together, not kanji alone- a word already generated at one
+# Same kanji, two levels- (kanji, level) together is the duplicate-check key (see
+# CLAUDE.md's backend/db.py notes), not kanji alone- a word already generated at one
 # level must not shadow a lookup for the same word at a different level.
 
 

@@ -1,5 +1,7 @@
-// Shared by popup.js and background.js - both need the same backend/frontend URL
-// defaults, and both read/write the same chrome.storage.local keys.
+// Shared by popup.js and background.js- both need the same backend/frontend URL
+// defaults and read the same chrome.storage.local keys; only popup.js writes them
+// (via saveSettings, from the settings form)- background.js only ever reads via
+// getSettings.
 export const DEFAULT_SETTINGS = {
   backendUrl: "http://localhost:5000",
   frontendUrl: "http://localhost:8080",

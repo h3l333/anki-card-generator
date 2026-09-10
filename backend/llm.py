@@ -27,7 +27,7 @@ T = TypeVar("T", bound=BaseModel)
 
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-DEFAULT_MODELS = "google/gemma-4-26b-a4b-it:free,openai/gpt-oss-20b:free,nvidia/nemotron-3-super-120b-a12b:free"
+DEFAULT_MODELS = "google/gemma-4-26b-a4b-it:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,nvidia/nemotron-3-super-120b-a12b:free"
 
 MODEL_NAMES = [
     m.strip() for m in os.getenv("OPENROUTER_MODELS", DEFAULT_MODELS).split(",") if m.strip()
@@ -100,11 +100,11 @@ _PLAIN_LABELS = [
     "JLPT_LEVEL",
 ]
 
-
+# Returns a dictionary where both the keys and values are strings.
 def _parse_plain_fields(text: str, labels: list[str]) -> dict[str, str]:
     fields: dict[str, str] = {}
     for raw_line in text.splitlines():
-        line = raw_line.strip().lstrip("-*•\t ")
+        line = raw_line.strip().lstrip("-*•\t ") # lstrip() removes characters from the left side only.
         if not line or (":" not in line and "：" not in line):
             continue
         label, value = re.split(r"[:：]", line, maxsplit=1)
@@ -208,6 +208,7 @@ def generate_card(
 def generate_card_plain(
     word: str,
     level: str = JLPT_LEVEL_DEFAULT,
+    # If a class or object is callable, that means it can be invoked like a function by appending parentheses to it.
     on_retry: Callable[[], None] | None = None,
 ) -> CardDraft:
     return _generate_card_via(
@@ -220,35 +221,50 @@ def generate_card_plain(
         on_retry=on_retry,
     )
 
-
+# The following function:
+# - Runs card generation on a background thread/executor so it doesn't block.
+# - Polls a queue for "retry" signals from on_retry, else emits periodic "heartbeat" events, until generation finishes.
+# - Drains any leftover retry signals after completion.
+# - Yields a final "error" or "result" event depending on outcome.
 def generate_card_with_events(
     arg,
     level: str = JLPT_LEVEL_DEFAULT,
     mode: str = "structured",
     generate_fn: Callable[..., BaseModel] | None = None,
-) -> Iterator[dict]:
+) -> Iterator[dict]: # Returns an iterator that itself yields dict events as generation progresses.
     if generate_fn is None:
         generate_fn = generate_card_plain if mode == "plain" else generate_card
     signal_queue: queue.Queue = queue.Queue()
-    future = _EXECUTOR.submit(
+    future = _EXECUTOR.submit( # EXECUTOR.submit() is a method that schedules a func. to be executed asynchronously
+    # and immediately returns a Future object.
         generate_fn, arg, level=level, on_retry=lambda: signal_queue.put("retry")
-    )
+    ) # In Python, lambda is a small function that is defined w/o a name. Best used for short, one-off operations.
 
-    start = time.monotonic()
+    # Synchronous generator using thread-based polling.
+    # Thread-based polling: concurrency technique where a dedicated execution thread checks the status of a resource
+    # or a condition at regular intervals until data becomes available, for example.
+    start = time.monotonic() # Timestamp that is set once and never reassigned.
     last_emit = start
-    while not future.done():
+    while not future.done(): # .done() returns true if the Future was cancelled or finished executing.
         try:
             signal = signal_queue.get(timeout=_QUEUE_POLL_S)
+            # get() removes and returns an item from the queue; the timeout parameter indicates to the program that it should
+            # wait for a maximum of _QUEUE_POLL_S.
+            # Once the time elapses, a queue.Empty exception is raised.
         except queue.Empty:
             signal = None
         now = time.monotonic()
         if signal == "retry":
-            yield {"event": "retry", "elapsed_s": round(now - start, 1)}
+            yield {"event": "retry", "elapsed_s": round(now - start, 1)} # Yields a dict describing the event and the
+            # seconds elapsed since generation started; here signal_queue.get() returned immediately with "retry",
+            # it did not wait out the timeout.
             last_emit = now
-        elif now - last_emit >= HEARTBEAT_INTERVAL_S:
+        elif now - last_emit >= HEARTBEAT_INTERVAL_S: # If the last signal was emitted more than HEARTBEAT_INTERVAL_S seconds ago
+            # (or exactly HEARTBEAT_INTERVAL_S seconds ago), yield a heartbeat signal.
             yield {"event": "heartbeat", "elapsed_s": round(now - start, 1)}
             last_emit = now
 
+    # Drain leftover signals loop:
     while True:
         try:
             if signal_queue.get_nowait() == "retry":
@@ -257,14 +273,15 @@ def generate_card_with_events(
             break
 
     try:
-        card = future.result()
+        card = future.result() # Retrieves return value of the function that ran on the worker thread generate_fn.
+        # Since atp future.done() is already true, it returns immedeately and does not block.
     except LLMError as exc:
-        yield {"event": "error", "detail": str(exc)}
+        yield {"event": "error", "detail": str(exc)} # Yields error event upon bad API key, verification failure after retrying, etc.
         return
-    except Exception as exc:
+    except Exception as exc: # Catch-all for error that isn't LLMError.
         yield {"event": "error", "detail": f"unexpected error generating '{arg}': {exc}"}
         return
-    yield {"event": "result", "card": card.model_dump()}
+    yield {"event": "result", "card": card.model_dump()} # Upon successful return of worker thread, yield card as a plain data event.
 
 
 def generate_cards_batch(
